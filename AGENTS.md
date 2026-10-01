@@ -3093,7 +3093,7 @@ waits for its consumer.
   the rest with what each needs, so this paragraph carries neither a count nor a membership for
   either list to outgrow. A suite in neither list fails the runner's own audit, so one cannot go
   uninvoked a second time.
-- **`./tests/drag.sh` is the internal drag's characterisation suite, 9 checks**, and it has to
+- **`./tests/drag.sh` is the internal drag's characterisation suite**, whose own last line prints its tally, and it has to
   be run by hand: no runner invokes it. It was written against the drag's behaviour BEFORE the
   platform-drag rewrite, so it is the net that catches what the rewrite changes, and it earned
   that immediately: the first cut of the rewrite failed R3, `expected [kept] got [GONE]`,
@@ -5062,6 +5062,25 @@ workspace up before lifting the file.
 Two things a reproduction meets: ghostty's paste protection raises "Potentially Unsafe Paste" when the
 terminal has no bracketed paste, which reads as a failed drop, and a press taken from an IPC centre can
 land on the column header rather than the row, so read a screenshot before calling a drag failed.
+
+## Drag to Trash
+
+A row drag dropped on the rail's Trash row sends the backend's existing `trash` request, the one
+`dd` sends, so it journals the same `Trashed` step and `z` restores it. `ui/RailTrashRow.qml` is the
+Trash row, a `SidebarRow` with a `DropArea`, and `ui/js/TrashDrop.js` decides.
+
+**Only a drag this window lifted may trash.** A foreign drop, another Flea's or the shelf's carries
+files Flea did not hand over, and `ui/js/Drag.js verbFor` already refuses to remove a source on a
+drop it did not deliver; a delete is that rule's strongest case. A drag carrying paths trashes those
+paths. A selection too wide to carry paths trashes by index, only over the listing it was lifted
+from, and named in the numbering of the lift, which the row marker now carries as its sixth field,
+so `src/backend/rowguard.rs` refuses it after a re-list rather than trashing whatever those indices
+name now. `tests/js/trashdrop.js` drives the decisions and `tests/drag.sh` case RT the real drop.
+
+A platform drag delivers no hover, so an auto-hidden rail would never come up for one:
+`ui/PaneRail.qml` lays a `DropArea` over the edge strip and the rail's width that keeps the overlay
+rail up while a row drag rests there, and refuses the drop itself, so a drop elsewhere on the overlay
+rail no longer falls through to the listing row under it.
 
 ## Backend memory levers that were measured and dropped
 
