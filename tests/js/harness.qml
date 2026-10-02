@@ -25,6 +25,8 @@ import "focus-lines.js" as FocusLinesSuite
 import "focus-wrap.js" as FocusWrapSuite
 import "format.js" as FormatSuite
 import "icons.js" as IconsSuite
+import "history.js" as HistorySuite
+import "history-tabs.js" as HistoryTabsSuite
 import "jump.js" as JumpSuite
 import "jump-heldout.js" as JumpHeldoutSuite
 import "keymap.js" as KeymapSuite
@@ -38,6 +40,7 @@ import "devices.js" as DevicesSuite
 import "mounts.js" as MountsSuite
 import "names.js" as NamesSuite
 import "nav.js" as NavSuite
+import "navmouse.js" as NavMouseSuite
 import "network.js" as NetworkSuite
 import "ops.js" as OpsSuite
 import "opstrash.js" as OpsTrashSuite
@@ -112,9 +115,9 @@ Item {
             ["foldersorts", FolderSortsSuite],
             ["gridgeometry", GridGeometrySuite], ["density", DensitySuite],
             ["focus-lines", FocusLinesSuite], ["focus-wrap", FocusWrapSuite],
-            ["format", FormatSuite], ["icons", IconsSuite],
+            ["format", FormatSuite], ["history", HistorySuite], ["history-tabs", HistoryTabsSuite], ["icons", IconsSuite],
             ["jump", JumpSuite], ["jump-heldout", JumpHeldoutSuite], ["keymap", KeymapSuite], ["localsend", LocalSendSuite], ["listbudget", ListBudgetSuite], ["match", MatchSuite], ["menu", MenuSuite],
-            ["marks", MarksSuite],             ["mounts", MountsSuite], ["names", NamesSuite], ["nav", NavSuite], ["crumbs", CrumbsSuite], ["devices", DevicesSuite], ["network", NetworkSuite],
+            ["marks", MarksSuite],             ["mounts", MountsSuite], ["names", NamesSuite], ["nav", NavSuite], ["navmouse", NavMouseSuite], ["crumbs", CrumbsSuite], ["devices", DevicesSuite], ["network", NetworkSuite],
             ["openwith", OpenWithSuite], ["ops", OpsSuite], ["opstrash", OpsTrashSuite],
             ["palette", PaletteSuite], ["pathbar", PathBarSuite], ["places", PlacesSuite], ["placemenu", PlaceMenuSuite], ["rail", RailSuite], ["scripts", ScriptsSuite],
             ["phones", PhonesSuite],
