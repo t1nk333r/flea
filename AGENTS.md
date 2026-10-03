@@ -76,8 +76,8 @@ phase and is not in this tree yet.
    paid the same again, so Super+Shift+F mapped the window 1.56 to 1.62 s after the key. In a clean
    Omarchy 4.0.4 lab guest with the same package and a virtio GPU, `nvidia-modprobe` returns in 2 ms
    and the NVIDIA ICD costs the launch about 20 ms, 17 to 31 ms against 2.9 to 6.2 ms over 12
-   interleaved launches to a stub `qs`, so the size of the win is the box's and not the driver's.
-   The pin cannot help, because every device the probe lists is AMD. `src/icdexclude.rs`
+   interleaved pairs of launches to a stub `qs`, so the size of the win is the box's and not the
+   driver's. The pin cannot help, because every device the probe lists is AMD. `src/icdexclude.rs`
    runs before the probe and before `qs` in every renderer arm, because the OpenGL retry inherits the
    shell's filter and zink draws GL through Vulkan. It sets `VK_LOADER_DRIVERS_DISABLE` to the
    manifest file names whose `ICD.library_path` file name is, whole, one of six packaged hardware
@@ -114,8 +114,10 @@ phase and is not in this tree yet.
    changes nothing, which keeps the pin working for manifests with metadata. Measured on the AMD box,
    `vkCreateInstance` then takes 6 to 8 ms and the window maps in
    154 to 185 ms over two warm launches against 1622 to 1950 ms over three for the installed 0.3.7;
-   deciding costs about 0.3 ms, inside the noise of 25 interleaved pairs of the launch to a stub `qs`,
-   and the explicit OpenGL arm measured above now pays it too. A loader
+   deciding costs well under a millisecond: over 25 interleaved pairs of the launch to a stub `qs`,
+   the same build given the operator's own filter, which skips the decision, differs by a paired
+   median of 0.06 ms both on the AMD box (deciding slower in 14 of 25 pairs, inside the noise) and in
+   the 4.0.4 guest (19 of 25), and the explicit OpenGL arm measured above now pays it too. A loader
    older than 1.3.234 ignores the variable and is as slow as before. Nothing is said on stderr,
    because no device changes. The marker `FLEA_VK_DISABLE` holds the exact filter written: a launch
    inheriting a filter its marker names, a new window or the OpenGL retry, decides again, and
