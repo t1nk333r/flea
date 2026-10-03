@@ -70,13 +70,14 @@ phase and is not in this tree yet.
    every Vulkan device owns a connected connector, or that has no DRM connectors at all, leaves
    the loader's default and says nothing.
    **A driver for a GPU vendor the box does not hold is not loaded where the loader can be told so,
-   and that is not the pin.** On an AMD-only box (an RX 7900 XTX beside a Raphael iGPU) with
+   and that is not the pin.** On an AMD-only box (an RX 7900 XTX beside a Granite Ridge iGPU) with
    `nvidia-utils` 610.57.04 installed, the NVIDIA ICD made `vkCreateInstance` take 0.63 to 1.1 s and
    found no device: it runs `nvidia-modprobe` twice, and each run took 365 to 370 ms there. Qt then
    paid the same again, so Super+Shift+F mapped the window 1.56 to 1.62 s after the key. In a clean
-   Omarchy 4.0.2 lab guest with the same package and a virtio GPU, `nvidia-modprobe` returns in 2 ms
-   and the NVIDIA ICD costs the launch 15 to 20 ms, so the size of the win is the box's and not the
-   driver's. The pin cannot help, because every device the probe lists is AMD. `src/icdexclude.rs`
+   Omarchy 4.0.4 lab guest with the same package and a virtio GPU, `nvidia-modprobe` returns in 2 ms
+   and the NVIDIA ICD costs the launch about 20 ms, 17 to 31 ms against 2.9 to 6.2 ms over 12
+   interleaved launches to a stub `qs`, so the size of the win is the box's and not the driver's.
+   The pin cannot help, because every device the probe lists is AMD. `src/icdexclude.rs`
    runs before the probe and before `qs` in every renderer arm, because the OpenGL retry inherits the
    shell's filter and zink draws GL through Vulkan. It sets `VK_LOADER_DRIVERS_DISABLE` to the
    manifest file names whose `ICD.library_path` file name is, whole, one of six packaged hardware
