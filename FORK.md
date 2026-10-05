@@ -89,6 +89,7 @@ them the same way it does on Omarchy.
 | `ci(fork): sync upstream and rebase general-linux` | `.github/workflows/fork-*.yml`, `tools/fork-sync`, `tools/fork-verify` | never |
 | `test(fork): run the X11 clipboard copy against stub tools` | `tests/generic/clipboard-x11.sh`, `tests/generic/js/clipboard.js`, `tests/generic/run.sh` | with `feat(clipboard)` |
 | `test(fork): open the fallback terminal end to end` | `tests/generic/terminal-fallback.sh`, `tests/generic/run.sh` | with `feat(terminal)` |
+| `fix(sandbox): mirror the host's /bin and /lib in the jail` | `src/portable/jailroots.rs`, `src/portable.rs`, `src/backend/sandbox.rs` (its four `/usr` links become one call per wrapper) | upstream's jail follows the host's own `/bin`, `/sbin`, `/lib` and `/lib64` |
 
 Rules every fork commit keeps, so a rebase stays cheap:
 

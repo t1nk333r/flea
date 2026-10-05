@@ -1,5 +1,6 @@
 // The general-Linux seams this fork adds; see FORK.md. Upstream files reach them through one-line hooks.
 mod gvfsfuse;
+mod jailroots;
 mod qmlroot;
 mod terminal;
 
@@ -20,4 +21,9 @@ pub fn qs_command(target: PathBuf) -> (Command, PathBuf) {
 // known emulator opens in dir instead; see terminal.
 pub fn terminal_fallback(first: io::Error, dir: &Path) -> io::Result<Child> {
     terminal::fallback(first, dir)
+}
+
+// src/backend/sandbox.rs's hook: the jail's /bin, /sbin, /lib and /lib64 as the host lays them out.
+pub fn jail_roots() -> &'static [String] {
+    jailroots::args()
 }

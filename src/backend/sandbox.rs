@@ -13,7 +13,7 @@ const READONLY_PREFIX_ARGS: usize = 4;
 // One read-only bind takes three arguments: the flag, the source and the destination.
 const READONLY_BIND_ARGS: usize = 3;
 
-// /bin, /sbin, /lib and /lib64 are all symlinks into usr on this box, so binding /usr covers them.
+// /bin, /sbin, /lib and /lib64 come from the host's own layout after these flags (fork: crate::portable::jail_roots).
 const BWRAP_FLAGS: &[&str] = &[
     "--unshare-all",
     "--die-with-parent",
@@ -33,18 +33,6 @@ const BWRAP_FLAGS: &[&str] = &[
     "--ro-bind",
     "/etc",
     "/etc",
-    "--symlink",
-    "usr/lib",
-    "/lib",
-    "--symlink",
-    "usr/lib",
-    "/lib64",
-    "--symlink",
-    "usr/bin",
-    "/bin",
-    "--symlink",
-    "usr/bin",
-    "/sbin",
     "--proc",
     "/proc",
     "--dev",
@@ -83,7 +71,8 @@ pub fn wrap_archive(inner: &[String], input: &Path, out: &Path) -> Vec<String> {
 // The one shared argv; the cap is the only argument a caller omits.
 pub(crate) fn wrap_with(inner: &[String], input: &Path, out: &Path, cpu_seconds: Option<u32>) -> Vec<String> {
     let head_and_binds = 10;
-    let mut a: Vec<String> = Vec::with_capacity(inner.len() + BWRAP_FLAGS.len() + head_and_binds);
+    let roots = crate::portable::jail_roots();
+    let mut a: Vec<String> = Vec::with_capacity(inner.len() + BWRAP_FLAGS.len() + roots.len() + head_and_binds);
     // prlimit stays outermost so the address-space cap still arrives.
     a.push(PRLIMIT.to_string());
     if let Some(seconds) = cpu_seconds {
@@ -94,6 +83,7 @@ pub(crate) fn wrap_with(inner: &[String], input: &Path, out: &Path, cpu_seconds:
     for flag in BWRAP_FLAGS {
         a.push(flag.to_string());
     }
+    a.extend_from_slice(roots);
     a.push("--ro-bind".to_string());
     a.push(input.to_string_lossy().to_string());
     a.push(input.to_string_lossy().to_string());
@@ -108,11 +98,13 @@ pub(crate) fn wrap_with(inner: &[String], input: &Path, out: &Path, cpu_seconds:
 // The pool's namespace flags around the long-lived thumbnail worker, which gets each job's files as descriptors and binds only its own executable; no prlimit, because the limits are per job and a CPU cap would also accumulate the worker's own time across the session.
 pub fn wrap_worker(inner: &[String], exe: &Path) -> Vec<String> {
     let head_and_binds = 4;
-    let mut a: Vec<String> = Vec::with_capacity(inner.len() + BWRAP_FLAGS.len() + head_and_binds);
+    let roots = crate::portable::jail_roots();
+    let mut a: Vec<String> = Vec::with_capacity(inner.len() + BWRAP_FLAGS.len() + roots.len() + head_and_binds);
     a.push(BWRAP.to_string());
     for flag in BWRAP_FLAGS {
         a.push(flag.to_string());
     }
+    a.extend_from_slice(roots);
     a.push("--ro-bind".to_string());
     a.push(exe.to_string_lossy().to_string());
     a.push(exe.to_string_lossy().to_string());
@@ -137,7 +129,8 @@ pub fn wrap_compile(inner: &[String], ro_binds: &[&Path], writable: &Path) -> Ve
 
 fn wrap_extra(inner: &[String], ro_binds: &[&Path], writable: Option<&Path>) -> Vec<String> {
     let head_and_binds = READONLY_PREFIX_ARGS + ro_binds.len() * READONLY_BIND_ARGS + usize::from(writable.is_some()) * READONLY_BIND_ARGS;
-    let mut a: Vec<String> = Vec::with_capacity(inner.len() + BWRAP_FLAGS.len() + head_and_binds);
+    let roots = crate::portable::jail_roots();
+    let mut a: Vec<String> = Vec::with_capacity(inner.len() + BWRAP_FLAGS.len() + roots.len() + head_and_binds);
     a.push(PRLIMIT.to_string());
     a.push(format!("--cpu={}", CPU_SECONDS));
     a.push(format!("--as={}", ADDRESS_SPACE_BYTES));
@@ -145,6 +138,7 @@ fn wrap_extra(inner: &[String], ro_binds: &[&Path], writable: Option<&Path>) -> 
     for flag in BWRAP_FLAGS {
         a.push(flag.to_string());
     }
+    a.extend_from_slice(roots);
     for bind in ro_binds {
         a.push("--ro-bind".to_string());
         a.push(bind.to_string_lossy().to_string());
@@ -241,7 +235,7 @@ print("over=" + reserve(OVER_MIB))
     fn the_readonly_argv_length_matches_its_named_counts() {
         let binds = [Path::new("/in/a.mp4"), Path::new("/in/b.mp4")];
         let got = wrap_readonly_extra(&inner(), &binds);
-        let named = READONLY_PREFIX_ARGS + BWRAP_FLAGS.len() + binds.len() * READONLY_BIND_ARGS + inner().len();
+        let named = READONLY_PREFIX_ARGS + BWRAP_FLAGS.len() + crate::portable::jail_roots().len() + binds.len() * READONLY_BIND_ARGS + inner().len();
         assert_eq!(got.len(), named);
     }
 
