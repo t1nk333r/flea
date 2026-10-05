@@ -1,4 +1,5 @@
 // The general-Linux seams this fork adds; see FORK.md. Upstream files reach them through one-line hooks.
+mod gvfsfuse;
 mod qmlroot;
 
 use std::path::PathBuf;
@@ -8,5 +9,7 @@ use std::process::Command;
 // Omarchy's shell modules are absent, see qmlroot.
 pub fn qs_command(target: PathBuf) -> (Command, PathBuf) {
     let entry = qmlroot::entry(target, std::env::var_os(qmlroot::ENV).as_deref());
-    (Command::new("qs"), entry)
+    let mut cmd = Command::new("qs");
+    gvfsfuse::apply(&mut cmd);
+    (cmd, entry)
 }
