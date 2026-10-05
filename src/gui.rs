@@ -181,7 +181,7 @@ fn apply_renderer(cmd: &mut Command, renderer: LaunchRenderer) {
 
 // The qs invocation both entry points share, including the renderer chosen at the last hand-off point.
 fn qs_command(target: PathBuf) -> Command {
-    let mut cmd = Command::new("qs");
+    let (mut cmd, target) = crate::portable::qs_command(target); // fork: ui/boot-compat off Omarchy
     cmd.arg("-p").arg(target);
     // Only the main window records a prefetch list; a chooser started from a Flea terminal must not overwrite it.
     cmd.env_remove(prefetch::LIST_ENV);

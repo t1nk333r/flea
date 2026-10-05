@@ -1,3 +1,4 @@
+mod portable;
 mod backend;
 mod chooser;
 mod clip;
