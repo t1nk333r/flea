@@ -1,0 +1,4 @@
+module qs.Ui
+BorderSurface 1.0 BorderSurface.qml
+PanelSectionHeader 1.0 PanelSectionHeader.qml
+PanelSeparator 1.0 PanelSeparator.qml
