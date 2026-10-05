@@ -36,7 +36,7 @@ pub fn open_terminal(path: &str) -> i32 {
     // corner: spawn and not exec, because the terminal outlives us; see AGENTS.md "Opening a file".
     let mut terminal = Command::new("xdg-terminal-exec");
     detach(&mut terminal);
-    let started = terminal.arg(&dir).spawn();
+    let started = terminal.arg(&dir).spawn().or_else(|first| crate::portable::terminal_fallback(first, &target)); // fork: no xdg-terminal-exec
     match started {
         Ok(_) => 0,
         Err(_) => {
