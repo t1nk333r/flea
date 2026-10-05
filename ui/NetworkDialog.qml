@@ -259,7 +259,7 @@ Item {
 
     function checkDropbox() {
         if (dropboxCheck.running) return
-        dropboxCheck.command = ["which", "dropbox-cli"]
+        dropboxCheck.command = ["sh", "-c", "command -v dropbox-cli || ! command -v omarchy-launch-terminal"] // fork: the section is an install route, so it also hides where Omarchy's installer is absent
         dropboxCheck.running = true
     }
 
