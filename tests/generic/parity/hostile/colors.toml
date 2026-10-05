@@ -1,0 +1,8 @@
+# No foreground, background or accent keys: color7, color0 and color4 stand in for them.
+color0 = '#0a0b0c'
+color4 = "#2244aa"   # inline comment
+color7=#e0e1e2
+red = "#aa0000"
+color1 = "#cc3311"
+cursor = "#12345"
+   color8 = "#808080"

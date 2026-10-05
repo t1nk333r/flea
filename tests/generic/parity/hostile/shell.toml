@@ -1,0 +1,29 @@
+stray-before-any-section = 1
+
+[controls]
+normal-color = "#ff000080"
+hover-cursor-color = accent
+selected-color = "#0f0"
+selection-color = "urgent"   # a role, quoted
+hover-cursor-fill-alpha = 1.7
+selection-fill-alpha = -0.2
+normal-border-width = 2.6
+hover-cursor-border-alpha = "0.5"
+not a key value line
+
+[style]
+selected-fill-alpha = 0.3
+
+[font]
+base-size = 14
+caption = 9
+icon = 0
+title = 20
+body = "13"
+
+[spacing]
+scale = 1.25
+scale-with-font = off
+row-gap = 5
+panel-gap = -4
+row-padding-x = "7.6"

@@ -1,0 +1,10 @@
+# ~/.config/omarchy/shell.toml for compat-parity's user fixture: each key conflicts with the stock
+# theme's shell.toml, so the user's value must win key by key while the theme's other keys stay.
+[font]
+base-size = 15
+
+[spacing]
+row-gap = 6
+
+[controls]
+hover-cursor-fill-alpha = 0.3
