@@ -1,0 +1,39 @@
+# Maintainer: t1nk33r <id7xyz@gmail.com>
+
+# Flea for Arch-likes without Omarchy; wraps the root PKGBUILD so its file list stays upstream's.
+# makepkg only reads a build file from the current directory, so this one sits beside the root
+# PKGBUILD; its own BUILDDIR keeps $srcdir off the Rust tree's src/:
+#   BUILDDIR=$(mktemp -d) makepkg -p PKGBUILD.generic -si
+[[ -f "$startdir/PKGBUILD" && -f "$startdir/ui/compat/Commons/qmldir" ]] || {
+  echo "run makepkg -p PKGBUILD.generic from the repo root" >&2
+  exit 1
+}
+source "$startdir/PKGBUILD"
+pkgdesc='Fast, keyboard-first file manager for Linux'
+url='https://github.com/t1nk333r/flea'
+# omarchy is not in Arch's official repos, and the compat root stands in for its shell modules.
+# Every other depend, xdg-terminal-exec included, resolves from core and extra.
+_kept=()
+for _d in "${depends[@]}"; do
+  [[ "$_d" == omarchy ]] || _kept+=("$_d")
+done
+depends=("${_kept[@]}")
+unset _d _kept
+optdepends+=('omarchy: theme following, the shelf plugin and the updater'
+             'xclip: Copy Path and share links on X11 (or xsel)')
+
+eval "$(declare -f package | sed '1s/^package /_flea_upstream_package /')"
+package() {
+  _flea_upstream_package
+  "$startdir/packaging/flea-compat-install" "$startdir" "$pkgdir"
+}
+
+# Upstream's check() also runs tests/js.sh, whose themes suite needs /usr/share/omarchy/themes.
+check() {
+  export CARGO_TARGET_DIR="$srcdir/target"
+  cd "$startdir"
+  cargo test --release --locked
+  ./tests/keymap-gen.sh
+  ./tests/generic/compat-surface.sh
+  ./tests/generic/dependencies-doc.sh
+}

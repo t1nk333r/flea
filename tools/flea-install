@@ -1,0 +1,177 @@
+#!/bin/bash
+# Installs a release build into /usr on any distro, with the same file list as PKGBUILD.generic: it
+# runs that PKGBUILD's package() into a staging root and copies the result, recording a manifest.
+#   tools/flea-install [--destdir DIR] [--force]     DIR defaults to / (needs root)
+#   tools/flea-install --uninstall [--destdir DIR]
+# Build first, as your user: cargo build --release --locked. This script never builds.
+set -u
+
+repo=$(cd "$(dirname "$0")/.." && pwd -P) || exit 1
+manifest_rel=usr/share/flea/install-manifest
+mode=install
+destdir=/
+force=0
+
+usage() { sed -n '2,6p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+die() { echo "flea-install: $*" >&2; exit 1; }
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --destdir) [ "$#" -ge 2 ] && [ -n "$2" ] || usage; destdir=$2; shift ;;
+    --destdir=?*) destdir=${1#--destdir=} ;;
+    --force) force=1 ;;
+    --uninstall) mode=uninstall ;;
+    -h|--help) usage ;;
+    *) echo "flea-install: unknown argument: $1" >&2; usage ;;
+  esac
+  shift
+done
+
+# The prefix is fixed: paths.rs, the D-Bus Exec= lines and FLEA_GIO_AUTH all name /usr.
+destdir=$(realpath -m -- "$destdir") || exit 1
+if [ "$destdir" = / ] && [ "$(id -u)" -ne 0 ]; then
+  die "installing into / needs root; rerun with sudo, or pass --destdir"
+fi
+# Root follows paths in a tree someone else may write, so a staging root is never root's to fill.
+if [ "$destdir" != / ] && [ "$(id -u)" -eq 0 ]; then
+  die "as root this installs only into /; stage into --destdir $destdir as your own user"
+fi
+root=${destdir%/}
+manifest="$root/$manifest_rel"
+umask 022
+# Every check below is a check-then-act, sound only while nobody else can rename entries in the tree:
+# true of / for root, and of a staging tree its user owns. So off /, each existing directory the run
+# walks must be the invoking user's and writable by nobody else.
+uid=$(id -u)
+trusted() { # trusted DIR: absent, or a directory this user owns that no group or other may write
+  local owner mode
+  [ "$destdir" = / ] && return 0
+  [ -e "$1" ] || return 0
+  read -r owner mode < <(stat -c '%u %a' -- "$1") || return 1
+  [ "$owner" = "$uid" ] && (( (8#$mode & 8#022) == 0 ))
+}
+for dir in "$root" "$root/usr" "$root/usr/share" "$root/usr/share/flea"; do
+  [ ! -L "$dir" ] || [ "$dir" = "$root" ] || die "$dir is a symlink; refusing to follow it"
+  trusted "$dir" || die "$dir is not yours alone (another owner, or writable by others); stage into a directory you own"
+done
+if [ -L "$manifest" ]; then
+  die "$manifest is a symlink; refusing to follow it"
+fi
+
+# True when no directory between the destination and PATH (relative to it) is a symlink or another
+# user's, so PATH names a file inside the destination and not one a linked directory leads elsewhere.
+confined() {
+  local dir=$root part parts
+  [ "${1%/*}" = "$1" ] && return 0
+  IFS=/ read -ra parts <<< "${1%/*}"
+  for part in "${parts[@]}"; do
+    dir="$dir/$part"
+    [ -L "$dir" ] && return 1
+    trusted "$dir" || return 1
+  done
+  return 0
+}
+
+# Removes every manifest path that is not also listed in KEEP (a file, or /dev/null for none).
+remove_listed() {
+  local list=$1 keep=$2 path
+  while IFS= read -r path; do
+    path=${path#./}
+    case "$path" in ''|/*|*..*) continue ;; esac
+    confined "$path" || { echo "flea-install: $root/$path sits under a symlinked directory" >&2; return 1; }
+    if [ -L "$root/$path" ] || [ -f "$root/$path" ]; then
+      rm -f -- "$root/$path" || return 1
+    fi
+  done < <(LC_ALL=C comm -23 <(LC_ALL=C sort -u "$list") <(LC_ALL=C sort -u "$keep"))
+}
+
+# Replaces the manifest with the sorted union of FILEs, through a file only this run can have made.
+write_manifest() { # write_manifest FILE...
+  local tmp
+  tmp=$(mktemp "$root/usr/share/flea/.install-manifest.XXXXXXXX") || return 1
+  if LC_ALL=C sort -u -- "$@" > "$tmp" && chmod 644 -- "$tmp" && mv -fT -- "$tmp" "$manifest"; then
+    return 0
+  fi
+  rm -f -- "$tmp"
+  return 1
+}
+
+prune_dirs() {
+  local dir
+  for dir in "$root/usr/share/flea" "$root/usr/lib/flea" "$root/usr/share/licenses/flea"; do
+    [ -d "$dir" ] && find "$dir" -depth -type d -empty -delete
+  done
+  return 0
+}
+
+if [ "$mode" = uninstall ]; then
+  [ -f "$manifest" ] || die "$manifest does not exist, so nothing here was installed by flea-install"
+  echo "flea-install: each user should first run: flea --default off; flea --picker off"
+  echo "flea-install: (those commands need Flea installed, so run them before this removal)"
+  remove_listed "$manifest" /dev/null || die "could not remove every path in $manifest"
+  rm -f -- "$manifest"
+  prune_dirs
+  echo "flea-install: removed Flea from $destdir"
+  exit 0
+fi
+
+bin="${CARGO_TARGET_DIR:-$repo/target}/release/flea"
+[ -x "$bin" ] || die "$bin does not exist; build first as your user: cargo build --release --locked"
+if { [ -e "$root/usr/bin/flea" ] || [ -L "$root/usr/bin/flea" ]; } && [ ! -f "$manifest" ] && [ "$force" -ne 1 ]; then
+  die "$root/usr/bin/flea belongs to something else (a package manager?); remove that first or pass --force"
+fi
+
+stage=$(mktemp -d "${TMPDIR:-/tmp}/flea-install.XXXXXXXX") || exit 1
+trap 'rm -rf -- "$stage"' EXIT
+mkdir "$stage/src" "$stage/pkg" || exit 1
+ln -s "$(dirname "$(dirname "$bin")")" "$stage/src/target" || exit 1
+
+# package() reads only $startdir, $srcdir/target/release/flea, $pkgdir and $pkgname.
+(
+  # shellcheck disable=SC2034 # read by the sourced package()
+  startdir=$repo srcdir="$stage/src" pkgdir="$stage/pkg"
+  cd "$repo" || exit 1
+  # shellcheck disable=SC1091 # the repo's own file, sourced the way makepkg does
+  source "$repo/PKGBUILD.generic" || exit 1
+  set -eu
+  package
+) || die "staging failed; nothing was installed"
+# The pacman removal hook means nothing outside pacman.
+rm -rf -- "$stage/pkg/usr/share/libalpm"
+
+(cd "$stage/pkg" && find . -mindepth 1 \( -type f -o -type l \) | LC_ALL=C sort) > "$stage/manifest" \
+  || die "could not list the staged files"
+
+# An upgrade drops what the previous install had and this one does not.
+if [ -f "$manifest" ]; then
+  remove_listed "$manifest" "$stage/manifest" || die "could not remove the previous install's leftovers"
+fi
+
+# Directories are created, never re-moded, so /usr and friends keep their own modes and times. A
+# symlinked one would carry the copy out of the destination, so none may be.
+(cd "$stage/pkg" && find . -mindepth 1 -type d) | while IFS= read -r dir; do
+  [ ! -L "$root/${dir#./}" ] || { echo "flea-install: $root/${dir#./} is a symlink" >&2; exit 1; }
+  trusted "$root/${dir#./}" || { echo "flea-install: $root/${dir#./} is not yours alone" >&2; exit 1; }
+  mkdir -p -- "$root/${dir#./}" || exit 1
+done || die "could not create the directories under $destdir"
+[ ! -L "$root/usr/share/flea" ] && [ ! -L "$manifest" ] || die "$root/usr/share/flea or its install-manifest is a symlink"
+# Recorded before the copy, the old paths with the new: a copy that stops part way leaves a manifest
+# naming everything it may have written, so a rerun upgrades it and --uninstall removes it.
+old=/dev/null
+[ -f "$manifest" ] && old=$manifest
+write_manifest "$old" "$stage/manifest" || die "could not write $manifest"
+failed=0
+while IFS= read -r path; do
+  path=${path#./}
+  if ! { rm -f -- "$root/$path" && cp -P --preserve=mode,timestamps -- "$stage/pkg/$path" "$root/$path"; }; then
+    failed=1
+    break
+  fi
+done < "$stage/manifest"
+[ "$failed" -eq 0 ] || die "copying into $destdir failed part way; rerun to finish"
+write_manifest "$stage/manifest" || die "could not write $manifest"
+
+echo "flea-install: installed $(wc -l < "$manifest") paths into $destdir (manifest: $manifest)"
+echo "flea-install: each user who wants Flea as the default file manager and file chooser runs:"
+echo "  flea --default     (or flea --picker for the file chooser alone)"
+echo "flea-install: update-desktop-database and gtk-update-icon-cache are optional refreshes."

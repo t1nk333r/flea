@@ -1,0 +1,21 @@
+#!/bin/bash
+# Installs the fork's compat QML root into a package root; the one list of compat files, used by
+# PKGBUILD.generic's package() and, through it, by tools/flea-install.
+#   packaging/flea-compat-install REPO ROOT
+set -eu
+
+[ "$#" -eq 2 ] || { echo "usage: flea-compat-install REPO ROOT" >&2; exit 2; }
+repo=$1
+root=$2
+ui="$root/usr/share/flea/ui"
+
+install -Dm644 "$repo/ui/compat/Commons/qmldir" "$repo"/ui/compat/Commons/*.qml -t "$ui/compat/Commons"
+install -Dm644 "$repo/ui/compat/Ui/qmldir" "$repo"/ui/compat/Ui/*.qml -t "$ui/compat/Ui"
+install -Dm644 "$repo/ui/compat/LICENSE.omarchy" -t "$root/usr/share/licenses/flea"
+# Relative links, as in the tree: the entries are upstream's own files, so their pragmas cannot drift.
+install -d "$ui/boot-compat"
+for entry in "$repo"/ui/boot/*.qml; do
+  ln -s "../boot/${entry##*/}" "$ui/boot-compat/${entry##*/}"
+done
+ln -s ../compat/Commons "$ui/boot-compat/Commons"
+ln -s ../compat/Ui "$ui/boot-compat/Ui"
