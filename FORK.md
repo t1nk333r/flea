@@ -87,6 +87,7 @@ them the same way it does on Omarchy.
 | `feat(clipboard): copy through xclip or xsel on X11` | `ui/js/X11Copy.js` (upstream's `ui/js/Clipboard.js` is its file clipboard), `ui/Opener.qml`, `ui/ShareLink.qml`, `tests/generic/js/*` | upstream merges PR #231 or an equivalent X11 clipboard |
 | `build(fork): package for Arch-likes and plain installs` | `PKGBUILD.generic` (repo root: `BUILDDIR=$(mktemp -d) makepkg -p PKGBUILD.generic -si`), `packaging/flea-compat-install`, `tools/flea-install`, `docs/install-linux.md` | never |
 | `ci(fork): sync upstream and rebase general-linux` | `.github/workflows/fork-*.yml`, `tools/fork-sync`, `tools/fork-verify` | never |
+| `test(fork): run the X11 clipboard copy against stub tools` | `tests/generic/clipboard-x11.sh`, `tests/generic/js/clipboard.js`, `tests/generic/run.sh` | with `feat(clipboard)` |
 
 Rules every fork commit keeps, so a rebase stays cheap:
 
@@ -112,6 +113,7 @@ Rules every fork commit keeps, so a rebase stays cheap:
 | `shellload-compat.sh [UI_DIR]` | the shell loads from `boot-compat` with no load error, and with no warning the Omarchy root does not also print |
 | `launch-root.sh [FLEA_BIN] [UI_DIR]` | `flea --gui` and `flea --pick` hand `qs -p` the root the table above promises |
 | `js.sh` | the fork's pure JavaScript (`ui/js/X11Copy.js`) |
+| `clipboard-x11.sh` | the X11 copy script hands xclip, else xsel, the exact text on the CLIPBOARD selection, reports failure when neither copies, and exits while the tool's selection owner lingers |
 
 `FORK_OMARCHY_REF` points the parity and shell-load suites at an Omarchy `shell/` checkout (CI uses
 basecamp/omarchy v4.0.4); otherwise they use `/usr/share/omarchy/shell` when it exists.
