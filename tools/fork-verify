@@ -1,0 +1,198 @@
+#!/bin/bash
+# Runs the gates a general-linux candidate must pass before Fork sync may publish it, and judges them
+# against upstream main's own result.
+#   tools/fork-verify run --tree DIR --results DIR [--side candidate|baseline] [--gates "A B"] [--as USER]
+#   tools/fork-verify compare --baseline RESULTS --candidate RESULTS
+#   tools/fork-verify --candidate DIR [--baseline DIR] [--logs DIR]      both, then compare, here
+# run records each gate's status, log and failure names in RESULTS. With --as, run is the supervisor
+# (root) and each gate runs as USER, so gate code cannot write RESULTS (made 0700 here). CI runs the
+# two sides on separate runners and compares on a third; see .github/workflows/fork-verify.yml.
+# compare: a gate red on the candidate blocks when it is a fork gate (generic), when upstream's is
+# green or missing, or when it fails a name upstream's does not (test, modes and msrv carry names);
+# otherwise it is upstream's red, a warning. Exit status = blocking failures.
+set -u
+
+upstream_gates=(build test budget clippy js keymap modes)
+fork_gates=(generic)
+
+# Each gate runs from the tree's root, the way each tool expects to be run; $1 names it.
+# shellcheck disable=SC2016 # expands in the gate's own shell
+gate_script='
+case "$1" in
+  build) cargo build --locked ;;
+  test) cargo test --locked --no-fail-fast ;;
+  budget) tools/flea-file-budget ;;
+  clippy) tools/flea-clippy tools/clippy-baseline.txt "$(mktemp -d "${TMPDIR:-/tmp}/fork-verify-clippy.XXXXXXXX")" ;;
+  js) tests/js.sh ;;
+  keymap) tests/keymap-gen.sh ;;
+  # Upstream ui/boot root: off Omarchy the launcher picks boot-compat, which launch-root proves.
+  modes) cargo build --locked && FLEA_COMMONS=omarchy tests/modes.sh ;;
+  generic) tests/generic/run.sh ;;
+  # Rust 1.77, the floor, through FORK_VERIFY_MSRV_CARGO (default a rustup "cargo +1.77.0"). Cargo.lock
+  # is format 4, which cargo 1.77 cannot read; with zero dependencies it names only the crate, so it
+  # is regenerated for the check and restored after. Not a default gate: CI names it in --gates.
+  msrv) rm -f Cargo.lock; ${FORK_VERIFY_MSRV_CARGO:-cargo +1.77.0} check --all-targets; rc=$?; git checkout -q -- Cargo.lock; exit "$rc" ;;
+  *) echo "fork-verify: no gate named $1"; exit 2 ;;
+esac'
+
+# The names a red gate's log fails, one per line, sorted; empty for a gate whose failures have none.
+# Sample input: "test portable::terminal::tests::x ... FAILED", "FAIL --terminal hands the directory to xdg-terminal-exec",
+# "error[E0658]: use of unstable library feature 'x'" then "  --> src/a.rs:3:9" (line numbers dropped).
+failures() { # failures NAME LOG
+  case "$1" in
+    test) sed -n -E 's/^test (.+) \.\.\. FAILED$/\1/p' "$2" ;;
+    modes) sed -n -E 's/^FAIL (.+)$/\1/p' "$2" ;;
+    msrv) awk '
+      /^error: (could not compile|aborting due to)/ { next }
+      /^error/ { if (msg != "") print msg; msg = $0; next }
+      msg != "" && /^ *--> / { sub(/^ *--> /, ""); sub(/:[0-9]+:[0-9]+$/, ""); print msg " @ " $0; msg = ""; next }
+      END { if (msg != "") print msg }' "$2" ;;
+  esac | LC_ALL=C sort -u
+}
+
+run() {
+  local tree="" results="" side=candidate gates="" as=""
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --tree) tree=${2:-}; shift ;;
+      --results) results=${2:-}; shift ;;
+      --side) side=${2:-}; shift ;;
+      --gates) gates=${2:-}; shift ;;
+      --as) as=${2:-}; shift ;;
+      *) echo "fork-verify run: unknown argument $1" >&2; return 2 ;;
+    esac
+    shift
+  done
+  [ -n "$tree" ] && [ -d "$tree" ] && [ -n "$results" ] || { echo "fork-verify run: --tree DIR and --results DIR are required" >&2; return 2; }
+  if [ -z "$gates" ]; then
+    gates="${upstream_gates[*]}"
+    [ "$side" = baseline ] || gates="$gates ${fork_gates[*]}"
+  fi
+  local home=""
+  if [ -n "$as" ]; then
+    [ "$(id -u)" -eq 0 ] || { echo "fork-verify run: --as needs the supervisor to be root" >&2; return 2; }
+    home=$(getent passwd "$as" | cut -d: -f6) && [ -n "$home" ] || { echo "fork-verify run: no user $as" >&2; return 2; }
+  fi
+  (umask 077 && mkdir -p "$results") && chmod 700 "$results" || return 2
+  local name rc
+  for name in $gates; do
+    # The log is opened here, by the supervisor; the gate only ever sees its stdout.
+    if [ -n "$as" ]; then
+      (cd "$tree" && runuser -u "$as" -- env HOME="$home" USER="$as" LOGNAME="$as" bash -c "$gate_script" _ "$name") \
+        > "$results/$name.log" 2>&1 < /dev/null
+    else
+      (cd "$tree" && bash -c "$gate_script" _ "$name") > "$results/$name.log" 2>&1 < /dev/null
+    fi
+    rc=$?
+    echo "$rc" > "$results/$name.rc"
+    failures "$name" "$results/$name.log" > "$results/$name.failures"
+    printf '%-6s %-8s rc=%s\n' "$side" "$name" "$rc"
+  done
+  return 0
+}
+
+show_log() { # The failing gate's own words, folded in Actions.
+  [ -n "${GITHUB_ACTIONS:-}" ] && echo "::group::$1 log ($2)"
+  tail -n 80 "$2"
+  [ -n "${GITHUB_ACTIONS:-}" ] && echo "::endgroup::"
+  return 0
+}
+
+compare() {
+  local base="" cand=""
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --baseline) base=${2:-}; shift ;;
+      --candidate) cand=${2:-}; shift ;;
+      *) echo "fork-verify compare: unknown argument $1" >&2; return 2 ;;
+    esac
+    shift
+  done
+  [ -d "$cand" ] && [ -d "$base" ] || { echo "fork-verify compare: --baseline RESULTS and --candidate RESULTS are required" >&2; return 2; }
+  local blocking=0 warnings=0 passed=0 name rcfile rc base_rc only cand_failed base_failed
+  local -a names=()
+  for name in "${upstream_gates[@]}" "${fork_gates[@]}" msrv; do
+    [ -e "$cand/$name.rc" ] && names+=("$name")
+  done
+  # Every fork gate must have run on the candidate; a missing result is a failure, never a pass.
+  for name in "${fork_gates[@]}"; do
+    [ -e "$cand/$name.rc" ] || { printf 'FAIL  %-8s blocking: no candidate result\n' "$name"; blocking=$((blocking + 1)); }
+  done
+  for name in "${names[@]}"; do
+    rcfile="$cand/$name.rc"
+    rc=$(cat "$rcfile")
+    if [ "$rc" = 0 ]; then
+      printf 'ok    %-8s\n' "$name"
+      passed=$((passed + 1))
+      continue
+    fi
+    if [[ " ${fork_gates[*]} " == *" $name "* ]]; then
+      printf 'FAIL  %-8s blocking (rc=%s)\n' "$name" "$rc"
+      show_log "$name" "$cand/$name.log"
+      blocking=$((blocking + 1))
+      continue
+    fi
+    base_rc=$(cat "$base/$name.rc" 2>/dev/null || echo missing)
+    if [ "$base_rc" = 0 ] || [ "$base_rc" = missing ]; then
+      printf 'FAIL  %-8s blocking: red on the candidate, %s on upstream\n' "$name" "$([ "$base_rc" = 0 ] && echo green || echo "no result")"
+      show_log "$name" "$cand/$name.log"
+      blocking=$((blocking + 1))
+      continue
+    fi
+    # Both red. Named failures compare as sets; a red with no named failure (a build error, an early
+    # exit) is upstream's only when upstream's red has none either.
+    cand_failed=$(cat "$cand/$name.failures" 2>/dev/null)
+    base_failed=$(cat "$base/$name.failures" 2>/dev/null)
+    if [ -n "$cand_failed" ]; then
+      only=$(LC_ALL=C comm -23 <(printf '%s\n' "$cand_failed") <(printf '%s\n' "$base_failed"))
+    elif [ -n "$base_failed" ]; then
+      only="(red without a named failure, while upstream's red names some)"
+    else
+      only=""
+    fi
+    if [ -n "$only" ]; then
+      printf 'FAIL  %-8s blocking: fails what upstream does not:\n' "$name"
+      printf '%s\n' "$only" | sed 's/^/        /'
+      show_log "$name" "$cand/$name.log"
+      blocking=$((blocking + 1))
+    else
+      printf 'WARN  %-8s red on upstream too, nothing upstream does not fail; not blocking\n' "$name"
+      [ -n "${GITHUB_ACTIONS:-}" ] && echo "::warning title=fork-verify $name::red on upstream main as well"
+      warnings=$((warnings + 1))
+    fi
+  done
+  echo "fork-verify: $passed passed, $warnings upstream-red, $blocking blocking"
+  return "$blocking"
+}
+
+# Both sides here, one after the other: for a disposable machine, never one holding credentials,
+# since the gates run the candidate's code.
+both() {
+  local candidate="" baseline="" logs=""
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --candidate) candidate=${2:-}; shift ;;
+      --baseline) baseline=${2:-}; shift ;;
+      --logs) logs=${2:-}; shift ;;
+      *) echo "usage: tools/fork-verify --candidate DIR [--baseline DIR] [--logs DIR]" >&2; return 2 ;;
+    esac
+    shift
+  done
+  [ -n "$candidate" ] && [ -d "$candidate" ] || { echo "fork-verify: --candidate DIR is required" >&2; return 2; }
+  [ -n "$logs" ] || logs=$(mktemp -d "${TMPDIR:-/tmp}/fork-verify.XXXXXXXX") || return 2
+  run --tree "$candidate" --results "$logs/candidate" --side candidate > /dev/null || return 2
+  mkdir -p "$logs/baseline" || return 2
+  if [ -n "$baseline" ]; then
+    run --tree "$baseline" --results "$logs/baseline" --side baseline > /dev/null || return 2
+  fi
+  compare --baseline "$logs/baseline" --candidate "$logs/candidate"
+  local rc=$?
+  echo "fork-verify: logs in $logs"
+  return "$rc"
+}
+
+case "${1:-}" in
+  run) shift; run "$@" ;;
+  compare) shift; compare "$@" ;;
+  *) both "$@" ;;
+esac

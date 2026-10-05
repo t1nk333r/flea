@@ -1,0 +1,95 @@
+name: Fork sync
+
+# Fast-forwards the fork's main to thisisgm/flea main and rebases general-linux onto it, or, with
+# candidate_ref, publishes the owner's rebase by hand that tools/fork-sync manual staged. rebase and
+# verify hold no secret; only publish holds the token, and it moves both refs in one atomic push or
+# neither. tools/fork-sync holds all of the git; FORK.md has the runbook and the one-time setup.
+on:
+  schedule:
+    - cron: '23 5 * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Rebase and verify, push nothing'
+        type: boolean
+        default: false
+      accept_upstream_main:
+        description: 'The 40-hex upstream main commit whose changes to .github, tools/fork-sync, tools/fork-verify or fork-added paths I reviewed as code that runs with the token; publish refuses unless upstream main is exactly it'
+        type: string
+        default: ''
+      candidate_ref:
+        description: 'The 40-hex commit tools/fork-sync manual staged on fork-sync/candidate; verified and published instead of a fresh rebase'
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fork-sync
+  cancel-in-progress: false
+
+jobs:
+  rebase:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      changed: ${{ steps.sync.outputs.changed }}
+      old_main: ${{ steps.sync.outputs.old_main }}
+      new_main: ${{ steps.sync.outputs.new_main }}
+      old_patches: ${{ steps.sync.outputs.old_patches }}
+      candidate: ${{ steps.sync.outputs.candidate }}
+      protected_changed: ${{ steps.sync.outputs.protected_changed }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: general-linux
+          fetch-depth: 0
+          persist-credentials: false
+      - id: sync
+        env:
+          FORK_SYNC_CANDIDATE: ${{ inputs.candidate_ref }}
+        run: tools/fork-sync rebase
+      - if: steps.sync.outputs.changed == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: candidate
+          path: candidate.bundle
+          retention-days: 7
+
+  verify:
+    needs: rebase
+    if: needs.rebase.outputs.changed == 'true'
+    uses: ./.github/workflows/fork-verify.yml
+    with:
+      bundle: candidate
+      candidate: ${{ needs.rebase.outputs.candidate }}
+      baseline: ${{ needs.rebase.outputs.new_main }}
+
+  # inputs.* is empty on schedule, so a scheduled run publishes and never accepts protected changes.
+  publish:
+    needs: [rebase, verify]
+    if: needs.rebase.outputs.changed == 'true' && !inputs.dry_run
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: fork-sync
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: general-linux
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: candidate
+      - name: Push main and general-linux together
+        env:
+          FORK_SYNC_TOKEN: ${{ secrets.FORK_SYNC_TOKEN }}
+          OLD_MAIN: ${{ needs.rebase.outputs.old_main }}
+          NEW_MAIN: ${{ needs.rebase.outputs.new_main }}
+          OLD_PATCHES: ${{ needs.rebase.outputs.old_patches }}
+          CANDIDATE: ${{ needs.rebase.outputs.candidate }}
+          PROTECTED_CHANGED: ${{ needs.rebase.outputs.protected_changed }}
+          ACCEPT: ${{ inputs.accept_upstream_main }}
+          STAGED: ${{ inputs.candidate_ref }}
+        run: tools/fork-sync publish

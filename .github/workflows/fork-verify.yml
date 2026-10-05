@@ -1,0 +1,195 @@
+name: Fork verify
+
+# The general-linux gates: called by Fork sync on a rebased or staged candidate, and run on pull
+# requests into general-linux. No secrets: everything here reads public refs only. See FORK.md.
+# The candidate and upstream main (the baseline) run on separate runners. On each, a trusted
+# supervisor (tools/fork-verify from the published commit this workflow came from, never the
+# candidate's) runs as root and runs every gate as the unprivileged build user, writing the results
+# where gate code cannot; a third job, which runs no candidate code, compares the two results.
+on:
+  workflow_call:
+    inputs:
+      bundle:
+        description: 'Artifact holding candidate.bundle; empty checks out the triggering ref'
+        type: string
+        default: ''
+      candidate:
+        description: 'Commit to verify, from the bundle'
+        type: string
+        default: ''
+      baseline:
+        description: 'Upstream main commit the upstream-owned gates are compared against'
+        type: string
+        default: ''
+  pull_request:
+    branches: [general-linux]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  # basecamp/omarchy v4.0.4 (MIT): themes/ for tests/js.sh, shell/ for the parity and shell-load references.
+  OMARCHY_REF: c668141e9c42b13c80c9ca4ea108e11708c5e8a5
+  CANDIDATE: ${{ inputs.candidate }}
+  BASELINE: ${{ inputs.baseline }}
+  # The verifier's commit: the published general-linux this run's workflow came from, or a pull
+  # request's base. A pull request can still edit this file; its runs advise a reviewer, nothing more.
+  VERIFIER_SHA: ${{ github.event.pull_request.base.sha || github.workflow_sha }}
+
+jobs:
+  gates:
+    strategy:
+      fail-fast: false
+      matrix:
+        side: [baseline, candidate]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    # Pinned like every action; the digest is the image the local replay of this job ran.
+    container: archlinux:base-devel@sha256:996c3a1d6b0d87b01242f6fcd8cfa3ad3eece1a67ab5c8f108e20af1d7b97bdd
+    env:
+      SIDE: ${{ matrix.side }}
+      # tools/flea-sandbox-guard's root for the qs-running suites; /home/flea-sandbox is its default.
+      FLEA_FIXTURE_ROOT: /tmp/flea-fixtures
+      FORK_OMARCHY_REF: /opt/omarchy-ref/shell
+      FORK_VERIFY_MSRV_CARGO: env RUSTC=/opt/rust-1.77/bin/rustc /opt/rust-1.77/bin/cargo
+    steps:
+      # Before checkout, which falls back to a tarball without history when the image has no git.
+      - run: pacman -Syu --noconfirm --needed --noprogressbar git
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      # The bundle carries upstream main's new commits as well as the candidate's.
+      - if: inputs.bundle != ''
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ inputs.bundle }}
+          path: /opt/bundle
+
+      # Root-owned and read-only to build: the verifier and the trusted tree it comes from.
+      - name: Trusted verifier, a build user and this side's tree
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory '*'
+          install -d -m 755 /opt/fork-verify
+          git worktree add -q --detach /opt/fork-verify/trusted "$VERIFIER_SHA"
+          install -m 755 /opt/fork-verify/trusted/tools/fork-verify /opt/fork-verify/fork-verify
+          [ ! -e /opt/bundle/candidate.bundle ] || git fetch -q --no-tags /opt/bundle/candidate.bundle '+refs/fork-sync/*:refs/fork-sync/*'
+          if [ "$SIDE" = baseline ]; then
+            sha=$(git rev-parse --verify "${BASELINE:-origin/main}^{commit}")
+          else
+            sha=$(git rev-parse --verify "${CANDIDATE:-HEAD}^{commit}")
+          fi
+          useradd -m build
+          install -d -o build -g build "$FLEA_FIXTURE_ROOT"
+          git clone -q --no-local "$GITHUB_WORKSPACE" /home/build/tree
+          git -C /home/build/tree fetch -q --no-tags origin '+refs/fork-sync/*:refs/fork-sync/*' '+refs/remotes/origin/*:refs/remotes/upstream-side/*'
+          git -C /home/build/tree checkout -q --detach "$sha"
+          chown -R build: /home/build/tree
+          echo "$SIDE tree: $sha, verifier: $VERIFIER_SHA"
+
+      # Package names are read as the build user, never by sourcing candidate code as root, and
+      # installed only from the official repos.
+      - name: Dependencies of the generic package, plus the test tools, and no Omarchy
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC2016 # expands in the build user's shell
+          list='cd "$1" && [ -f PKGBUILD.generic ] && startdir=$PWD bash -c '\''source ./PKGBUILD.generic; printf "%s\n" "${depends[@]}" "${makedepends[@]}"'\'' || true'
+          mapfile -t deps < <({ runuser -u build -- bash -c "$list" _ /opt/fork-verify/trusted
+                                runuser -u build -- bash -c "$list" _ /home/build/tree; } | sort -u)
+          for d in "${deps[@]}"; do
+            [[ "$d" =~ ^[a-z0-9@._+-]+([<>=]+[A-Za-z0-9._:+~-]+)?$ ]] || { echo "::error::not a package name: $d"; exit 1; }
+          done
+          pacman -S --noconfirm --needed --noprogressbar rust python qt6-declarative ttf-dejavu xclip libarchive "${deps[@]}"
+          if pacman -Q omarchy 2>/dev/null || [ -e /usr/share/omarchy/shell ]; then
+            echo "::error::omarchy is installed, so this job would not prove a box without it"; exit 1
+          fi
+
+      - name: Omarchy reference (themes for tests/js.sh, Commons/Ui for parity)
+        run: |
+          set -euo pipefail
+          git init -q /opt/omarchy-ref
+          git -C /opt/omarchy-ref fetch -q --depth 1 https://github.com/basecamp/omarchy.git "$OMARCHY_REF"
+          git -C /opt/omarchy-ref checkout -q FETCH_HEAD -- themes shell LICENSE
+          install -d /usr/share/omarchy
+          cp -r /opt/omarchy-ref/themes /usr/share/omarchy/themes
+
+      # The Rust floor beside the current toolchain, from the official tarballs, hashes pinned.
+      - name: Rust 1.77
+        run: |
+          set -euo pipefail
+          cd /tmp
+          for part in 'rustc 89397dddb99733bad987e9fdc9d985a150af2e39c81766099e584d93991f5752' \
+                      'cargo 0af971f126e0307d4e4d974f0e9c33fd1c2923274b14a0861823b5a019e8faf5' \
+                      'rust-std e5fec840744c3ff63611f6801de80f5ec8e099fa8225bf46d064810a9545e9b5'; do
+            read -r name sum <<< "$part"
+            curl -sSfLO "https://static.rust-lang.org/dist/$name-1.77.0-x86_64-unknown-linux-gnu.tar.xz"
+            echo "$sum  $name-1.77.0-x86_64-unknown-linux-gnu.tar.xz" | sha256sum -c -
+            tar -xJf "$name-1.77.0-x86_64-unknown-linux-gnu.tar.xz"
+            "$name-1.77.0-x86_64-unknown-linux-gnu/install.sh" --prefix=/opt/rust-1.77 --disable-ldconfig > /dev/null
+          done
+
+      # Upstream main has no fork gate; the candidate also runs generic. Results stay root-only.
+      - name: Gates, each as the build user
+        run: |
+          set -euo pipefail
+          gates="build test budget clippy js keymap modes msrv"
+          [ "$SIDE" = baseline ] || gates="$gates generic"
+          /opt/fork-verify/fork-verify run --tree /home/build/tree --results /var/lib/fork-verify/"$SIDE" \
+            --side "$SIDE" --gates "$gates" --as build
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: verify-${{ matrix.side }}
+          path: /var/lib/fork-verify/${{ matrix.side }}
+          retention-days: 7
+
+      - if: matrix.side == 'candidate'
+        name: Package without Omarchy
+        run: |
+          set -euo pipefail
+          # makepkg checks the closure itself: a depend missing from the official repos fails here.
+          # --nocheck: check() is the test, keymap and compat-surface runs the gates above already
+          # judged against upstream, and a container's filesystem reds one of upstream's own copy tests.
+          runuser -u build -- bash -euo pipefail -c '
+            export HOME=/home/build
+            cd /home/build/tree
+            BUILDDIR=/home/build/makepkg PKGDEST=/home/build/pkg makepkg -p PKGBUILD.generic --noconfirm --nocheck
+          '
+          pacman -U --noconfirm --noprogressbar /home/build/pkg/flea-*.pkg.tar.zst
+
+      - if: matrix.side == 'candidate'
+        name: Installed layout
+        run: |
+          set -euo pipefail
+          runuser -u build -- bash -euo pipefail -c '
+            export HOME=/home/build
+            cd /home/build/tree
+            FLEA_BIN=/usr/bin/flea tests/generic/shellload-compat.sh /usr/share/flea/ui
+            tests/generic/launch-root.sh /usr/bin/flea /usr/share/flea/ui
+            CARGO_TARGET_DIR=/home/build/makepkg/flea/src/target tools/flea-install --destdir /home/build/stage
+          '
+          # The plain installer and the package install the same paths, minus the pacman hook.
+          diff <(bsdtar -tf /home/build/pkg/flea-*.pkg.tar.zst | grep -v -e '^\.' -e '/$' -e '^usr/share/libalpm' | sort) \
+               <(sed 's#^\./##' /home/build/stage/usr/share/flea/install-manifest | sort)
+
+  # Runs no candidate code: the trusted verifier compares the two sides' results.
+  compare:
+    needs: gates
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.VERIFIER_SHA }}
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: verify-baseline
+          path: ${{ runner.temp }}/baseline
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: verify-candidate
+          path: ${{ runner.temp }}/candidate
+      - name: Candidate against upstream main
+        run: tools/fork-verify compare --baseline "$RUNNER_TEMP/baseline" --candidate "$RUNNER_TEMP/candidate"

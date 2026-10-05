@@ -1,0 +1,286 @@
+#!/bin/bash
+# Moves the fork's main to upstream's main and rebases general-linux onto it; see FORK.md.
+#   tools/fork-sync rebase     fetch, check, rebase in a scratch worktree, bundle; never pushes
+#   tools/fork-sync publish    one atomic push of both refs, each guarded by its own lease
+#   tools/fork-sync manual [--accept SHA]
+#                              after a rebase by hand: checks it, stages it on origin's
+#                              fork-sync/candidate and asks Fork sync to verify and publish it
+# rebase writes changed, old_main, new_main, old_patches, candidate and protected_changed to
+# $GITHUB_OUTPUT (stdout when unset) and candidate.bundle to $FORK_SYNC_BUNDLE. With
+# FORK_SYNC_CANDIDATE (a 40-hex commit, Fork sync's candidate_ref) it takes that commit from the
+# staging branch instead of rebasing.
+# publish reads OLD_MAIN NEW_MAIN OLD_PATCHES CANDIDATE PROTECTED_CHANGED ACCEPT STAGED FORK_SYNC_TOKEN;
+# ACCEPT is the 40-hex upstream main commit the owner reviewed, or empty.
+# Run from inside a clone of the fork whose origin is the fork.
+set -euo pipefail
+
+upstream_url=${FORK_SYNC_UPSTREAM_URL:-https://github.com/thisisgm/flea.git}
+fork_url=${FORK_SYNC_FORK_URL:-https://github.com/t1nk333r/flea.git}
+main=${FORK_SYNC_MAIN:-main}
+patches=${FORK_SYNC_PATCHES:-general-linux}
+bundle=${FORK_SYNC_BUNDLE:-$PWD/candidate.bundle}
+repo=${FORK_SYNC_REPO:-t1nk333r/flea}
+# Where manual stages a hand-made candidate for Fork sync to verify and publish.
+staging=fork-sync/candidate
+export GIT_TERMINAL_PROMPT=0
+
+summary() { printf '%s\n' "$@" >> "${GITHUB_STEP_SUMMARY:-/dev/stderr}"; }
+output() { printf '%s=%s\n' "$1" "$2" >> "${GITHUB_OUTPUT:-/dev/stdout}"; }
+refuse() {
+  echo "fork-sync: $1" >&2
+  [ -n "${GITHUB_ACTIONS:-}" ] && echo "::error title=fork-sync::$1"
+  summary "## Fork sync refused" "" "$@"
+  exit 1
+}
+
+work=""
+drop_work() {
+  [ -n "$work" ] || return 0
+  git worktree remove --force "$work/tree" >/dev/null 2>&1 || true
+  rm -rf -- "$work"
+  git worktree prune
+  work=""
+}
+
+# Upstream's changes (OLD_MAIN..NEW_MAIN) that publish never takes unreviewed: .github (a file or
+# anything under it), the files the publish job runs with the token or that judge what it publishes
+# (tools/fork-sync, tools/fork-verify), and any path a fork patch ADDS (OLD_MAIN..OLD_PATCHES), so
+# upstream cannot take over a fork file unseen. The named paths are the real protection: once a
+# fork commit is wholly absorbed upstream, --empty=drop removes it and its paths leave the added
+# set, so a file this helper starts running from the checkout must be named in the grep below.
+# Upstream edits to upstream files the fork only modifies never run with the token, and verify
+# still gates them, so they need no acceptance. Paths are compared as raw NUL-separated bytes,
+# never as git's quoted lines, and printed shell-quoted. Fails when a commit is missing.
+protected_changes() { # protected_changes OLD_MAIN NEW_MAIN OLD_PATCHES
+  local dir path rc=0
+  dir=$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/fork-sync-paths.XXXXXXXX") || return 1
+  {
+    git diff -z --name-only --no-renames "$1" "$2" > "$dir/upstream" \
+      && git diff -z --name-only --no-renames --diff-filter=A "$1" "$3" > "$dir/added" \
+      && LC_ALL=C sort -zu "$dir/upstream" > "$dir/upstream.sorted" \
+      && LC_ALL=C sort -zu "$dir/added" > "$dir/added.sorted" \
+      && LC_ALL=C comm -z -12 "$dir/upstream.sorted" "$dir/added.sorted" > "$dir/hits"; } || rc=1
+  if [ "$rc" -eq 0 ]; then
+    { LC_ALL=C grep -zE '^(\.github(/|$)|tools/fork-sync$|tools/fork-verify$)' "$dir/upstream.sorted" || [ "$?" -eq 1 ]; } \
+      >> "$dir/hits" || rc=1
+  fi
+  if [ "$rc" -eq 0 ]; then
+    while IFS= read -r -d '' path; do
+      printf '%q\n' "$path"
+    done < <(LC_ALL=C sort -zu "$dir/hits")
+  fi
+  rm -rf -- "$dir"
+  return "$rc"
+}
+
+# Refuses unless ACCEPT is exactly NEW_MAIN when PROTECTED (protected_changes' list) is non-empty or
+# CHANGED is true; HOW names the way to pass the accepted commit in the refusal.
+require_accept() { # require_accept OLD_MAIN NEW_MAIN PROTECTED CHANGED ACCEPT HOW
+  local old=$1 new=$2 protected=$3 changed=$4 accept=$5 how=$6 why
+  [ -z "$protected" ] && [ "$changed" != true ] && return 0
+  [ -z "$accept" ] || [[ "$accept" =~ ^[0-9a-f]{40}$ ]] \
+    || refuse "the accepted upstream main must be a full 40-hex commit id, got '$accept'"
+  [ "$accept" = "$new" ] && return 0
+  why="no accepted upstream main was given"
+  [ -z "$accept" ] || why="the accepted upstream main is ${accept:0:12}, but upstream main is now ${new:0:12}"
+  refuse "upstream changed protected paths and $why" "" \
+    "Upstream changed (\`${old:0:12}..${new:0:12}\`) .github, the sync tools, or a path a fork patch added:" \
+    '```' "${protected:-(the rebase job reported a change)}" '```' "" \
+    "Accepting publishes code that later runs with FORK_SYNC_TOKEN. Review \`git diff $old $new\`," \
+    "including the triggers of any new workflow (it may run once on the push), then rerun with" \
+    "$how$new. If upstream moves on first, review again. Nothing was pushed."
+}
+
+rebase() {
+  if git remote get-url upstream >/dev/null 2>&1; then
+    git remote set-url upstream "$upstream_url"
+  else
+    git remote add upstream "$upstream_url"
+  fi
+  git fetch --quiet --no-tags upstream "+refs/heads/$main:refs/remotes/upstream/$main"
+  git fetch --quiet --no-tags origin "+refs/heads/$main:refs/remotes/origin/$main" \
+    "+refs/heads/$patches:refs/remotes/origin/$patches"
+
+  local old_main new_main old_patches
+  old_main=$(git rev-parse --verify "refs/remotes/origin/$main^{commit}")
+  new_main=$(git rev-parse --verify "refs/remotes/upstream/$main^{commit}")
+  old_patches=$(git rev-parse --verify "refs/remotes/origin/$patches^{commit}")
+  output old_main "$old_main"
+  output new_main "$new_main"
+  output old_patches "$old_patches"
+
+  git merge-base --is-ancestor "$old_main" "$new_main" \
+    || refuse "upstream $main is not a fast-forward of the fork's $main" "" \
+         "fork $main: \`$old_main\`, upstream $main: \`$new_main\`. Nothing was pushed; the history was rewritten upstream, so reconcile by hand (FORK.md)."
+  git merge-base --is-ancestor "$old_main" "$old_patches" \
+    || refuse "$patches is not on $main's tip; rebase by hand, FORK.md" "" \
+         "$main: \`$old_main\`, $patches: \`$old_patches\`. Nothing was pushed."
+
+  local staged=${FORK_SYNC_CANDIDATE:-}
+  if [ -z "$staged" ] && [ "$old_main" = "$new_main" ]; then
+    output changed false
+    summary "## Fork sync: up to date" "" "\`$main\` is upstream's \`${new_main:0:12}\`; nothing to do."
+    return 0
+  fi
+
+  # Listed before the rebase, so a conflict refusal names them too.
+  local candidate protected protected_changed=false
+  protected=$(protected_changes "$old_main" "$new_main" "$old_patches") \
+    || refuse "could not list upstream's changes against the fork's paths"
+  if [ -n "$protected" ]; then
+    protected_changed=true
+    printf 'fork-sync: upstream changed protected paths (accept upstream main %s to publish):\n%s\n' \
+      "$new_main" "$protected" >&2
+  fi
+  output protected_changed "$protected_changed"
+  if [ -n "$staged" ]; then
+    # The owner's rebase by hand, staged by manual: taken as it is, never rebased again here.
+    [[ "$staged" =~ ^[0-9a-f]{40}$ ]] || refuse "candidate_ref must be a full 40-hex commit id, got '$staged'"
+    git fetch --quiet --no-tags origin "+refs/heads/$staging:refs/fork-sync/staged" \
+      || refuse "origin has no $staging branch to take candidate_ref from"
+    [ "$(git rev-parse refs/fork-sync/staged)" = "$staged" ] \
+      || refuse "origin's $staging is $(git rev-parse --short=12 refs/fork-sync/staged), not candidate_ref ${staged:0:12}"
+    git merge-base --is-ancestor "$new_main" "$staged" \
+      || refuse "candidate_ref ${staged:0:12} is not on top of upstream $main ${new_main:0:12}"
+    [ -z "$(git rev-list --merges "$new_main..$staged")" ] \
+      || refuse "candidate_ref ${staged:0:12} has merge commits above upstream $main; rebase it linearly"
+    candidate=$staged
+  else
+    work=$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/fork-sync.XXXXXXXX")
+    # Removed on every exit, so a failure leaves neither the worktree nor its admin entry behind.
+    trap drop_work EXIT
+    # No hooks: the rebase replays commits, and a clone's own hooks (upstream's hk pins the author) must not judge them.
+    git -c core.hooksPath=/dev/null worktree add --quiet --detach "$work/tree" "$old_patches"
+    if ! GIT_COMMITTER_NAME=t1nk33r GIT_COMMITTER_EMAIL=id7xyz@gmail.com git -c core.hooksPath=/dev/null \
+         -C "$work/tree" rebase --empty=drop --onto "$new_main" "$old_main" >"$work/rebase.log" 2>&1; then
+      local stopped files
+      stopped=$(git -C "$work/tree" log -1 --format='%h %s' REBASE_HEAD 2>/dev/null || echo "(unknown commit)")
+      files=$(git -C "$work/tree" diff --name-only --diff-filter=U || true)
+      git -C "$work/tree" rebase --abort >/dev/null 2>&1 || true
+      cat "$work/rebase.log" >&2
+      refuse "rebasing $patches onto upstream ${new_main:0:12} stopped at: $stopped" "" \
+        "Conflicting files:" '```' "${files:-(none reported)}" '```' "" \
+        "Protected paths upstream changed (publishing needs the exact upstream main \`$new_main\` accepted):" \
+        '```' "${protected:-(none)}" '```' "" \
+        "Nothing was pushed. Resolve by hand with FORK.md's runbook."
+    fi
+    candidate=$(git -C "$work/tree" rev-parse HEAD)
+    drop_work
+    trap - EXIT
+  fi
+
+  # Patches upstream absorbed: subjects in the old stack that the new one no longer has.
+  local dropped
+  dropped=$(LC_ALL=C comm -23 <(git log --format=%s "$old_main..$old_patches" | LC_ALL=C sort) \
+                              <(git log --format=%s "$new_main..$candidate" | LC_ALL=C sort))
+
+  git update-ref refs/fork-sync/candidate "$candidate"
+  git update-ref refs/fork-sync/main "$new_main"
+  git bundle create --quiet "$bundle" refs/fork-sync/candidate refs/fork-sync/main "^$old_main"
+
+  output changed true
+  output candidate "$candidate"
+  summary "## Fork sync: candidate ready" "" \
+    "- \`$main\`: \`${old_main:0:12}\` -> \`${new_main:0:12}\` ($(git rev-list --count "$old_main..$new_main") upstream commits)" \
+    "- \`$patches\`: \`${old_patches:0:12}\` -> \`${candidate:0:12}\` ($(git rev-list --count "$new_main..$candidate") fork commits${staged:+, rebased by hand and staged on $staging})" \
+    "- upstream changed .github, the sync tools or a fork-added path: $protected_changed"
+  if [ -n "$dropped" ]; then
+    summary "" "Fork commits dropped because upstream now contains them:" '```' "$dropped" '```'
+  fi
+  if [ -n "$protected" ]; then
+    summary "" "Protected paths upstream changed (publish needs accept_upstream_main=$new_main):" '```' "$protected" '```'
+  fi
+}
+
+# shellcheck disable=SC2153 # OLD_MAIN and friends come from the publish job's environment.
+publish() {
+  local name
+  for name in OLD_MAIN NEW_MAIN OLD_PATCHES CANDIDATE; do
+    [[ "${!name:-}" =~ ^[0-9a-f]{40}$ ]] || refuse "$name is not a commit id: '${!name:-}'"
+  done
+  [ -f "$bundle" ] || refuse "$bundle does not exist"
+  git bundle verify --quiet "$bundle" >/dev/null || refuse "$bundle does not apply to this clone"
+  git fetch --quiet --no-tags "$bundle" "+refs/fork-sync/*:refs/fork-sync/*"
+  [ "$(git rev-parse refs/fork-sync/candidate)" = "$CANDIDATE" ] || refuse "the bundle's candidate is not $CANDIDATE"
+  [ "$(git rev-parse refs/fork-sync/main)" = "$NEW_MAIN" ] || refuse "the bundle's main is not $NEW_MAIN"
+  git merge-base --is-ancestor "$OLD_MAIN" "$NEW_MAIN" || refuse "$NEW_MAIN is not a fast-forward of $OLD_MAIN"
+  git merge-base --is-ancestor "$NEW_MAIN" "$CANDIDATE" || refuse "$CANDIDATE is not on top of $NEW_MAIN"
+  # A staged candidate is published as exactly that commit, and its staging branch goes in the same push.
+  local -a also=()
+  if [ -n "${STAGED:-}" ]; then
+    [ "$STAGED" = "$CANDIDATE" ] || refuse "candidate_ref ${STAGED:0:12} is not the verified candidate ${CANDIDATE:0:12}"
+    also=("--force-with-lease=refs/heads/$staging:$CANDIDATE" ":refs/heads/$staging")
+  fi
+  # Recomputed here rather than trusted from the rebase job's output alone.
+  local protected
+  protected=$(protected_changes "$OLD_MAIN" "$NEW_MAIN" "$OLD_PATCHES") \
+    || refuse "could not list upstream's changes against the fork's paths; is $OLD_PATCHES in this clone?"
+  require_accept "$OLD_MAIN" "$NEW_MAIN" "$protected" "${PROTECTED_CHANGED:-}" "${ACCEPT:-}" \
+    "Fork sync by hand with accept_upstream_main="
+  [ -n "${FORK_SYNC_TOKEN:-}" ] || refuse "FORK_SYNC_TOKEN is empty; set it in the fork-sync environment (FORK.md)"
+
+  # The header goes through git's environment config, never argv, and is masked before anything
+  # could print it; printf is a builtin, so the token is not in any process's argv either. No
+  # hooks: nothing in the checkout runs while the header is in the environment.
+  local header
+  header="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$FORK_SYNC_TOKEN" | base64 -w0)"
+  unset FORK_SYNC_TOKEN
+  [ -n "${GITHUB_ACTIONS:-}" ] && echo "::add-mask::${header#AUTHORIZATION: basic }"
+  if ! GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.https://github.com/.extraheader GIT_CONFIG_VALUE_0="$header" \
+       git -c core.hooksPath=/dev/null push --atomic --porcelain \
+         "--force-with-lease=refs/heads/$main:$OLD_MAIN" \
+         "--force-with-lease=refs/heads/$patches:$OLD_PATCHES" "${also[@]:0:1}" \
+         "$fork_url" "$NEW_MAIN:refs/heads/$main" "$CANDIDATE:refs/heads/$patches" "${also[@]:1}"; then
+    refuse "the push was rejected; neither ref moved" "" \
+      "A lease failure means someone pushed $main, $patches or $staging since this run fetched them; rerun Fork sync."
+  fi
+  summary "## Fork sync: published" "" "- \`$main\` -> \`${NEW_MAIN:0:12}\`" "- \`$patches\` -> \`${CANDIDATE:0:12}\`"
+}
+
+# The owner's step after rebasing general-linux by hand (FORK.md runbook). It runs nothing from the
+# candidate and verifies nothing here: it checks the rebase, applies publish's own exact-commit
+# acceptance to protected paths before pushing anything, stages the candidate on origin's
+# fork-sync/candidate (leased, no hooks) and dispatches Fork sync with candidate_ref, so the
+# secretless verify and the token-holding publish both run on GitHub's runners. It must be the
+# helper published on origin's general-linux, run from a copy of that, never from the checkout.
+manual() {
+  local self published old_main new_main old_patches head branch protected staged_now url
+  local accept=${FORK_SYNC_ACCEPT:-}
+  [ "${1:-}" != --accept ] || accept=${2:-}
+  self=$(git hash-object -- "${BASH_SOURCE[0]}") || refuse "cannot read this helper"
+  published=$(git rev-parse --verify --quiet "refs/remotes/origin/$patches:tools/fork-sync") \
+    || refuse "origin/$patches has no tools/fork-sync; git fetch origin"
+  [ "$self" = "$published" ] || refuse "this is not the tools/fork-sync published on origin/$patches; run a copy of that one (FORK.md), never the rebased checkout's"
+  [ ! -e "$(git rev-parse --git-path rebase-merge)" ] && [ ! -e "$(git rev-parse --git-path rebase-apply)" ] \
+    || refuse "a rebase is still in progress; finish or abort it first"
+  branch=$(git symbolic-ref --quiet --short HEAD) || branch=""
+  [ "$branch" = "$patches" ] || refuse "check out $patches first (on '${branch:-a detached HEAD}')"
+  [ -z "$(git ls-files --unmerged)" ] || refuse "unmerged paths remain"
+  [ -z "$(git status --porcelain --untracked-files=no)" ] || refuse "the tree has uncommitted changes; commit or drop them"
+  old_main=$(git rev-parse --verify "refs/remotes/origin/$main^{commit}") || refuse "no origin/$main; git fetch origin"
+  new_main=$(git rev-parse --verify "refs/remotes/upstream/$main^{commit}") || refuse "no upstream/$main; git fetch upstream"
+  old_patches=$(git rev-parse --verify "refs/remotes/origin/$patches^{commit}") || refuse "no origin/$patches; git fetch origin"
+  head=$(git rev-parse HEAD)
+  git merge-base --is-ancestor "$old_main" "$new_main" || refuse "upstream/$main is not a fast-forward of origin/$main"
+  git merge-base --is-ancestor "$new_main" "$head" || refuse "$patches is not rebased onto upstream/$main"
+  [ -z "$(git rev-list --merges "$new_main..$head")" ] || refuse "$patches has merge commits above upstream/$main; rebase it linearly"
+  protected=$(protected_changes "$old_main" "$new_main" "$old_patches") \
+    || refuse "could not list upstream's changes against the fork's paths"
+  require_accept "$old_main" "$new_main" "$protected" false "$accept" "the published helper's manual --accept "
+
+  staged_now=$(git ls-remote origin "refs/heads/$staging" | cut -f1) || refuse "cannot read origin's $staging"
+  git -c core.hooksPath=/dev/null push --porcelain "--force-with-lease=refs/heads/$staging:$staged_now" \
+    origin "$head:refs/heads/$staging" || refuse "staging ${head:0:12} on origin's $staging was rejected"
+  gh workflow run fork-sync.yml -R "$repo" --ref "$patches" -f "candidate_ref=$head" \
+    ${accept:+-f "accept_upstream_main=$accept"} \
+    || refuse "${head:0:12} is staged on $staging, but Fork sync could not be started; start it with candidate_ref=$head"
+  url="https://github.com/$repo/actions/workflows/fork-sync.yml"
+  echo "fork-sync: staged ${head:0:12} on $staging and started Fork sync; follow it at $url"
+}
+
+case "${1:-}" in
+  rebase) rebase ;;
+  publish) publish ;;
+  manual) shift; manual "$@" ;;
+  *) echo "usage: tools/fork-sync rebase|publish|manual [--accept UPSTREAM_MAIN_SHA]" >&2; exit 2 ;;
+esac
