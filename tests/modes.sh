@@ -900,8 +900,8 @@ out=$(script -qec "$(printf '%q ' "${no_desktop[@]}" "$BIN_REAL" --picker); echo
 check "a claim with no desktop named and no desktop file writes portals.conf" "1" "$(grep -c 'flea;gtk, written to .*/xdg-desktop-portal/portals.conf' <<<"$out")"
 check "and exits 0" "1" "$(grep -cx 'rc=0' <<<"$out")"
 check "and restarts the portal" "6" "$(restarts)"
-# The routing alone decides: a claim whose float block fails (no bindings.lua) still exits 1 but restarts.
-rm "$D/config/hypr/bindings.lua"
+# The routing alone decides: a claim whose float block fails (an unreadable bindings.lua) still exits 1 but restarts.
+rm "$D/config/hypr/bindings.lua" && mkdir "$D/config/hypr/bindings.lua"
 out=$(at_terminal "" --picker)
 check "a routed claim whose window half failed names that failure" "1" "$(grep -c 'bindings.lua could not be read' <<<"$out")"
 check "and still restarts the portal" "7" "$(restarts)"

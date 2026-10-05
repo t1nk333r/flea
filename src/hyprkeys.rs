@@ -22,7 +22,9 @@ const MODMASKS: [u32; 2] = [65, 73];
 
 pub fn claim() -> Result<String, String> {
     let path = bindings_path()?;
-    let text = read(&path)?;
+    let Some(text) = read(&path)? else {
+        return Ok(format!("keys: skipped, {} does not exist, so no Hyprland key was bound; bind flea --gui in your desktop's keyboard settings", path.display()));
+    };
     if has_block(&text) {
         return Ok(format!("keys: already Flea's, the flea --default block is in {}", path.display()));
     }
@@ -49,7 +51,9 @@ pub fn claim() -> Result<String, String> {
 
 pub fn release() -> Result<String, String> {
     let path = bindings_path()?;
-    let text = read(&path)?;
+    let Some(text) = read(&path)? else {
+        return Ok(format!("keys: nothing to undo, {} does not exist", path.display()));
+    };
     let Some(without) = without_block(&text)? else {
         return Ok(format!("keys: nothing to undo, no flea --default block in {}", path.display()));
     };
@@ -68,7 +72,9 @@ pub fn release() -> Result<String, String> {
 // A chooser is that same kind of window, so this asks for the same tag rather than inventing a size.
 pub fn float_claim() -> Result<String, String> {
     let path = bindings_path()?;
-    let text = read(&path)?;
+    let Some(text) = read(&path)? else {
+        return Ok(format!("window: skipped, {} does not exist, so the picker opens as an ordinary window", path.display()));
+    };
     if begin_at(&text, FLOAT_BEGIN).is_some() {
         return Ok(format!("window: already floating, the flea --picker block is in {}", path.display()));
     }
@@ -93,7 +99,9 @@ pub fn float_claim() -> Result<String, String> {
 
 pub fn float_release() -> Result<String, String> {
     let path = bindings_path()?;
-    let text = read(&path)?;
+    let Some(text) = read(&path)? else {
+        return Ok(format!("window: nothing to undo, {} does not exist", path.display()));
+    };
     let Some(without) = cut(&text, FLOAT_BEGIN, FLOAT_END)? else {
         return Ok(format!("window: nothing to undo, no flea --picker block in {}", path.display()));
     };
@@ -110,9 +118,15 @@ fn bindings_path() -> Result<PathBuf, String> {
     Ok(config_home()?.join("hypr").join("bindings.lua"))
 }
 
-// Omarchy ships the file and hyprland.lua requires it, so a missing one is a broken box and not a first run.
-fn read(path: &std::path::Path) -> Result<String, String> {
-    fs::read_to_string(path).map_err(|e| format!("{} could not be read ({:?}), and it is where the key bindings go; Omarchy ships it", path.display(), e.kind()))
+// Omarchy ships the file and hyprland.lua requires it, so on Omarchy it is always there. A missing one
+// is a desktop without Omarchy's Hyprland config (fork: see FORK.md), which has no keys to write;
+// any other failure is still a broken file and stays an error.
+fn read(path: &std::path::Path) -> Result<Option<String>, String> {
+    match fs::read_to_string(path) {
+        Ok(text) => Ok(Some(text)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(format!("{} could not be read ({:?}), and it is where the key bindings go", path.display(), e.kind())),
+    }
 }
 
 // The unbind comes first, or both bindings fire: the override shape the Omarchy manual documents.
@@ -315,5 +329,19 @@ mod tests {
         assert_eq!(descriptions(BINDS_TEXT), [Some("File manager".to_string()), Some("File manager (cwd)".to_string())]);
         assert_eq!(descriptions("bindd\n\tmodmask: 65\n\tkey: G\n\tdescription: Other\n\n"), [None, None]);
         assert_eq!(descriptions(""), [None, None]);
+    }
+
+    // fork: a desktop without Omarchy's Hyprland config has no bindings.lua, which is a skip, not a failure.
+    #[test]
+    fn a_missing_bindings_file_is_a_skip_and_any_other_failure_names_the_file() {
+        let dir = crate::backend::testdir::TestDir::new("hyprkeys-read");
+        assert_eq!(read(&dir.join("bindings.lua")), Ok(None));
+        dir.file("bindings.lua", "-- user\n");
+        assert_eq!(read(&dir.join("bindings.lua")), Ok(Some("-- user\n".to_string())));
+        // A directory where the file belongs is a broken config, matched by its path rather than by
+        // ErrorKind::IsADirectory, which needs Rust 1.83 over the 1.77 floor.
+        let as_dir = dir.dir("hypr-dir");
+        let err = read(&as_dir).expect_err("a directory is not a missing file");
+        assert!(err.contains(&as_dir.display().to_string()), "{}", err);
     }
 }
