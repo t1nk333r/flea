@@ -88,6 +88,7 @@ them the same way it does on Omarchy.
 | `build(fork): package for Arch-likes and plain installs` | `PKGBUILD.generic` (repo root: `BUILDDIR=$(mktemp -d) makepkg -p PKGBUILD.generic -si`), `packaging/flea-compat-install`, `tools/flea-install`, `docs/install-linux.md` | never |
 | `ci(fork): sync upstream and rebase general-linux` | `.github/workflows/fork-*.yml`, `tools/fork-sync`, `tools/fork-verify` | never |
 | `test(fork): run the X11 clipboard copy against stub tools` | `tests/generic/clipboard-x11.sh`, `tests/generic/js/clipboard.js`, `tests/generic/run.sh` | with `feat(clipboard)` |
+| `test(fork): open the fallback terminal end to end` | `tests/generic/terminal-fallback.sh`, `tests/generic/run.sh` | with `feat(terminal)` |
 
 Rules every fork commit keeps, so a rebase stays cheap:
 
@@ -114,6 +115,7 @@ Rules every fork commit keeps, so a rebase stays cheap:
 | `launch-root.sh [FLEA_BIN] [UI_DIR]` | `flea --gui` and `flea --pick` hand `qs -p` the root the table above promises |
 | `js.sh` | the fork's pure JavaScript (`ui/js/X11Copy.js`) |
 | `clipboard-x11.sh` | the X11 copy script hands xclip, else xsel, the exact text on the CLIPBOARD selection, reports failure when neither copies, and exits while the tool's selection owner lingers |
+| `terminal-fallback.sh [FLEA_BIN]` | with no xdg-terminal-exec, `flea --terminal` opens `$TERMINAL`, else the first known emulator, in the canonical directory with no inherited pipe and its own process group, and exits 2 when none is installed |
 
 `FORK_OMARCHY_REF` points the parity and shell-load suites at an Omarchy `shell/` checkout (CI uses
 basecamp/omarchy v4.0.4); otherwise they use `/usr/share/omarchy/shell` when it exists.

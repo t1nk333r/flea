@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # Runs the fork's own suites, the ones tests/run-all.sh never sees (its audit globs tests/*.sh only).
-# Each suite's OWN exit code is read, the tests/run-all.sh rule. Builds nothing: launch-root and
-# shellload-compat need target/debug/flea (or FLEA_BIN), so build first.
+# Each suite's OWN exit code is read, the tests/run-all.sh rule. Builds nothing: launch-root,
+# shellload-compat and terminal-fallback need target/debug/flea (or FLEA_BIN), so build first.
 #   tests/generic/run.sh
 set -uo pipefail
 cd "$(dirname "$0")/../.." || exit 1
 
-suites="compat-surface compat-parity shellload-compat launch-root js clipboard-x11"
+suites="compat-surface compat-parity shellload-compat launch-root js clipboard-x11 terminal-fallback"
 failed=0
 ran=0
 skipped=0
