@@ -1,5 +1,7 @@
+import Quickshell
 import Quickshell.Io
 import QtQuick
+import "js/X11Copy.js" as X11Copy
 
 Item {
     id: root
@@ -61,7 +63,7 @@ Item {
             }
             root.pendingUrl = url
             root._clipboardAwaitingStart = true
-            copyToClipboard.command = ["wl-copy", url]
+            copyToClipboard.command = X11Copy.isX11(Quickshell.env("WAYLAND_DISPLAY"), Quickshell.env("DISPLAY")) ? X11Copy.x11Argv(url) : ["wl-copy", url]
             copyToClipboard.running = true
         }
     }

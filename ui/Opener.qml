@@ -1,6 +1,7 @@
 import Quickshell
 import Quickshell.Io
 import QtQuick
+import "js/X11Copy.js" as X11Copy
 
 // The one component that runs Flea's own opening modes, so the huge page corner has one owner; see AGENTS.md "Opening a file".
 Item {
@@ -81,7 +82,7 @@ Item {
         if (copier.running) {
             return
         }
-        copier.command = ["sh", "-c", "printf '%s' \"$1\" | wl-copy", "_", text]
+        copier.command = X11Copy.isX11(Quickshell.env("WAYLAND_DISPLAY"), Quickshell.env("DISPLAY")) ? X11Copy.x11Argv(text) : ["sh", "-c", "printf '%s' \"$1\" | wl-copy", "_", text]
         copier.running = true
     }
 

@@ -1,5 +1,6 @@
 // The fork's pure JavaScript suites, driven like tests/js/harness.qml (which the fork never edits).
 import QtQuick
+import "clipboard.js" as ClipboardSuite
 
 Item {
     Component.onCompleted: {
@@ -14,6 +15,7 @@ Item {
 
         // One [name, suite] row per suite, beside its import above.
         var suites = [
+            ["clipboard", ClipboardSuite]
         ];
         for (var s = 0; s < suites.length; s++)
             suites[s][1].run(check, suites[s][0]);
