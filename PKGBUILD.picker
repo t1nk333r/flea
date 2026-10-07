@@ -8,6 +8,8 @@ url='https://github.com/t1nk333r/flea'
 _picker_pkgrel=1
 pkgrel="${pkgrel}.${_picker_pkgrel}"
 options=('!debug')
+# Cargo already strips the release binary; preserve byte parity with plain installs.
+options+=('!strip')
 depends=('bash' 'bubblewrap' 'coreutils' 'dbus' 'fontconfig' 'gcc-libs' 'glib2' 'glibc'
          'gvfs' 'python' 'python-gobject' 'qt6-declarative' 'quickshell>=0.3.1'
          'shared-mime-info' 'util-linux' 'xdg-desktop-portal')

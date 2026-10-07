@@ -81,6 +81,8 @@ cargo build --release --locked
 sudo tools/flea-install                  # --force to overwrite a foreign /usr/bin/flea
 sudo tools/flea-install --uninstall      # first, each user runs: flea --default off; flea --picker off
 tools/flea-install --destdir DIR         # stage elsewhere, as your own user, into a directory only you can write
+tools/flea-install --picker --destdir DIR # stage the picker-only variant as your user
+sudo tools/flea-install --picker         # install only after preparing full-package migration
 ```
 
 The prefix is `/usr` and cannot be changed: the binary, the D-Bus service files and the portal all
@@ -88,6 +90,20 @@ name `/usr/share/flea` and `/usr/lib/flea`. It refuses to overwrite a `/usr/bin/
 manager owns unless you pass `--force`. Rerunning it upgrades in place and removes files the new
 version no longer ships. As root it installs only into `/`; it refuses a `--destdir` there, and any
 symlinked directory inside the destination.
+
+`--picker` selects the same package payload as `PKGBUILD.picker`, with licensing
+under `flea-picker`. Upgrades between full and picker remove only obsolete
+manifest-owned paths, including the profile marker when returning to full.
+Uninstall follows the manifest regardless of variant; do not combine
+`--picker` and `--uninstall`. For picker removal each user first runs
+`flea --picker off`. Dependencies are never installed automatically.
+For other distros, use the shared requirements below but omit full-preview,
+clipboard and expect packages for picker-only. Add Qt declarative modules:
+Debian's `qml6-module-qtquick`, `qml6-module-qtquick-layouts`,
+`qml6-module-qtquick-shapes`, `qml6-module-qtqml-xmllistmodel`, or Fedora's
+`qt6-qtdeclarative` (Nix: `qt6.qtdeclarative`), plus Bash, coreutils, D-Bus,
+Fontconfig and xdg-desktop-portal. Optional protocol backends remain optional.
+These mappings are installation guidance, not proof of a non-Arch runtime.
 
 ### Runtime dependencies
 

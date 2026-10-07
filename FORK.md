@@ -111,6 +111,12 @@ unit tests, which need no fixture root; the picker suites run in CI. No package 
 ALPM hook changes user routing. The service still activates the existing Python
 FileChooser backend; legal notices and both complete compat modules are retained.
 
+`tools/flea-install --picker` selects that recipe without changing the default
+full install. Its existing manifest and confinement rules own variant transitions
+and removal; obsolete desktop/FileManager1/shelf payload is removed on a switch
+to picker, and the marker is removed on a switch back. Unmanifested files remain
+untouched. `picker-install.sh` exercises both directions and refusal boundaries.
+
 ## The patch stack and when to drop each commit
 
 | Subject | Files | Drop it when |
@@ -132,6 +138,7 @@ FileChooser backend; legal notices and both complete compat modules are retained
 | `feat(picker): guard picker-only package modes` | `src/portable/package_mode.rs`, `src/portable/package_mode_tests.rs`, `src/portable.rs`, `src/main.rs` (+1, the second hook, right after the `--backend` dispatch) | upstream ships its own picker-only package, or the fork drops `flea-picker`; review `PICKER_MODES` whenever upstream adds a mode the picker invokes |
 | `build(picker): derive the picker UI closure` | `tools/flea-picker-closure`, `tools/picker/{closure,lexer,resolver}.py`, `tests/generic/picker-closure.sh`, `tests/generic/picker/{closure,oracle,sandbox}.py`, `tests/generic/run.sh` | with `feat(picker)` |
 | `build(picker): add the picker-only package` | `PKGBUILD.picker`, `packaging/flea-picker-install`, `docs/install-linux.md`, `tests/generic/picker-package.sh`, `tests/generic/picker/layout.py`, `tests/generic/run.sh` | with `feat(picker)` |
+| `feat(install): support picker-only plain installs` | `tools/flea-install` (`--picker`), `PKGBUILD.picker` (`!strip`), `docs/install-linux.md`, `tests/generic/picker-install.sh`, `tests/generic/picker/install.py`, `tests/generic/run.sh` | with `build(picker): add the picker-only package` |
 
 Rules every fork commit keeps, so a rebase stays cheap:
 
@@ -161,6 +168,7 @@ Rules every fork commit keeps, so a rebase stays cheap:
 | `terminal-fallback.sh [FLEA_BIN]` | with no xdg-terminal-exec, `flea --terminal` opens `$TERMINAL`, else the first known emulator, in the canonical directory with no inherited pipe and its own process group, and exits 2 when none is installed |
 | `picker-closure.sh` | the closure generator follows imports, registry types, deferred loads and assets in miniature trees and fails closed on nine unresolved or unapproved cases; on the real UI, a regex reading that shares nothing with its tokenizer finds no literal component or script reference outside the generated list |
 | `picker-package.sh [STAGE]` | the staged package payload has the picker-only layout (portal service, pruned registry, profile marker, confined compat links) and its backend answers |
+| `picker-install.sh` | `tools/flea-install --picker` switches full to picker to full, then uninstalls, with manifest pruning, payload equal to the package's, the marker only on picker, and the confinement refusals intact |
 
 `FORK_OMARCHY_REF` points the parity and shell-load suites at an Omarchy `shell/` checkout (CI uses
 basecamp/omarchy v4.0.4); otherwise they use `/usr/share/omarchy/shell` when it exists.

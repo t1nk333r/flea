@@ -1,7 +1,7 @@
 #!/bin/bash
-# Installs a release build into /usr on any distro, with the same file list as PKGBUILD.generic: it
-# runs that PKGBUILD's package() into a staging root and copies the result, recording a manifest.
-#   tools/flea-install [--destdir DIR] [--force]     DIR defaults to / (needs root)
+# Installs a release build into /usr on any distro, with the selected package's file list:
+# runs package() into a staging root and copies the result, recording a manifest.
+#   tools/flea-install [--picker] [--destdir DIR] [--force]     DIR defaults to / (needs root)
 #   tools/flea-install --uninstall [--destdir DIR]
 # Build first, as your user: cargo build --release --locked. This script never builds.
 set -u
@@ -11,6 +11,7 @@ manifest_rel=usr/share/flea/install-manifest
 mode=install
 destdir=/
 force=0
+picker=0
 
 usage() { sed -n '2,6p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 die() { echo "flea-install: $*" >&2; exit 1; }
@@ -20,12 +21,14 @@ while [ "$#" -gt 0 ]; do
     --destdir) [ "$#" -ge 2 ] && [ -n "$2" ] || usage; destdir=$2; shift ;;
     --destdir=?*) destdir=${1#--destdir=} ;;
     --force) force=1 ;;
+    --picker) picker=1 ;;
     --uninstall) mode=uninstall ;;
     -h|--help) usage ;;
     *) echo "flea-install: unknown argument: $1" >&2; usage ;;
   esac
   shift
 done
+[ "$picker" -eq 0 ] || [ "$mode" != uninstall ] || die "--picker with --uninstall is ambiguous; the manifest selects what to remove"
 
 # The prefix is fixed: paths.rs, the D-Bus Exec= lines and FLEA_GIO_AUTH all name /usr.
 destdir=$(realpath -m -- "$destdir") || exit 1
@@ -98,7 +101,7 @@ write_manifest() { # write_manifest FILE...
 
 prune_dirs() {
   local dir
-  for dir in "$root/usr/share/flea" "$root/usr/lib/flea" "$root/usr/share/licenses/flea"; do
+  for dir in "$root/usr/share/flea" "$root/usr/lib/flea" "$root/usr/share/licenses/flea" "$root/usr/share/licenses/flea-picker"; do
     [ -d "$dir" ] && find "$dir" -depth -type d -empty -delete
   done
   return 0
@@ -106,7 +109,11 @@ prune_dirs() {
 
 if [ "$mode" = uninstall ]; then
   [ -f "$manifest" ] || die "$manifest does not exist, so nothing here was installed by flea-install"
-  echo "flea-install: each user should first run: flea --default off; flea --picker off"
+  if grep -qFx -e './usr/share/flea/picker-only' -e 'usr/share/flea/picker-only' "$manifest"; then
+    echo "flea-install: each user should first run: flea --picker off"
+  else
+    echo "flea-install: each user should first run: flea --default off; flea --picker off"
+  fi
   echo "flea-install: (those commands need Flea installed, so run them before this removal)"
   remove_listed "$manifest" /dev/null || die "could not remove every path in $manifest"
   rm -f -- "$manifest"
@@ -131,8 +138,10 @@ ln -s "$(dirname "$(dirname "$bin")")" "$stage/src/target" || exit 1
   # shellcheck disable=SC2034 # read by the sourced package()
   startdir=$repo srcdir="$stage/src" pkgdir="$stage/pkg"
   cd "$repo" || exit 1
-  # shellcheck disable=SC1091 # the repo's own file, sourced the way makepkg does
-  source "$repo/PKGBUILD.generic" || exit 1
+  recipe=PKGBUILD.generic
+  [ "$picker" -eq 0 ] || recipe=PKGBUILD.picker
+  # shellcheck source=/dev/null # the repo's own file, sourced the way makepkg does
+  source "$repo/$recipe" || exit 1
   set -eu
   package
 ) || die "staging failed; nothing was installed"
@@ -170,8 +179,14 @@ while IFS= read -r path; do
 done < "$stage/manifest"
 [ "$failed" -eq 0 ] || die "copying into $destdir failed part way; rerun to finish"
 write_manifest "$stage/manifest" || die "could not write $manifest"
+prune_dirs
 
 echo "flea-install: installed $(wc -l < "$manifest") paths into $destdir (manifest: $manifest)"
-echo "flea-install: each user who wants Flea as the default file manager and file chooser runs:"
-echo "  flea --default     (or flea --picker for the file chooser alone)"
-echo "flea-install: update-desktop-database and gtk-update-icon-cache are optional refreshes."
+if [ "$picker" -eq 1 ]; then
+  echo "flea-install: each user who wants Flea file dialogs runs: flea --picker"
+  echo "flea-install: before removal, each user runs: flea --picker off"
+else
+  echo "flea-install: each user who wants Flea as the default file manager and file chooser runs:"
+  echo "  flea --default     (or flea --picker for the file chooser alone)"
+  echo "flea-install: update-desktop-database and gtk-update-icon-cache are optional refreshes."
+fi
