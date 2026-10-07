@@ -1,0 +1,215 @@
+#!/usr/bin/env python3
+"""Root supervisor: candidate package code never owns its verification results."""
+import argparse
+import contextlib
+import os
+from pathlib import Path
+import pwd
+import re
+import shutil
+import stat
+import subprocess
+import sys
+import tempfile
+from picker.archive import validate, forbidden
+
+
+def directory(path):
+    path = Path(path).absolute()
+    for parent in reversed((path, *path.parents)):
+        if parent.exists() and (parent.is_symlink() or parent.stat().st_uid != 0 or parent.stat().st_mode & 0o022):
+            raise ValueError('supervisor path is not root-owned and confined: '+str(parent))
+    path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    path.chmod(0o700)
+    return path
+
+
+def copy_regular(source, destination, limit):
+    # Never follows a final link a less trusted user planted, and copies only a bounded regular file.
+    with os.fdopen(os.open(source, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), 'rb') as incoming:
+        info = os.fstat(incoming.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_size > limit:
+            raise ValueError('not a bounded regular file: '+str(source))
+        with open(destination, 'xb') as output:
+            shutil.copyfileobj(incoming, output)
+
+
+class Supervisor:
+    def __init__(self, args, log):
+        self.args, self.log = args, log
+        user = pwd.getpwnam(args.user)
+        if user.pw_uid == 0:
+            raise ValueError('candidate must run as a non-root user')
+        self.user = user
+        self.home = Path(user.pw_dir)
+        self.fixture = self.home.parent/'flea-sandbox'
+        self.fixture.mkdir(exist_ok=True)
+        os.chown(self.fixture, user.pw_uid, user.pw_gid)
+        self.fixture.chmod(0o755)
+        self.env = ['env', '-i', 'PATH=/usr/bin:/bin', 'HOME='+str(self.home),
+                    'USER='+args.user, 'LOGNAME='+args.user, 'FLEA_FIXTURE_ROOT='+str(self.fixture)]
+
+    def run(self, command, user=False, cwd=None, capture=False, stdin=None):
+        if user:
+            command = ['runuser', '-u', self.args.user, '--', *self.env, *map(str, command)]
+        result = subprocess.run(command, cwd=cwd, stdin=stdin or subprocess.DEVNULL,
+                                stdout=subprocess.PIPE if capture else self.log,
+                                stderr=self.log, text=capture)
+        if result.returncode:
+            raise RuntimeError(f'command failed ({result.returncode}): {command[0]}')
+        return result.stdout if capture else None
+
+    def owned(self, name):
+        path = Path(tempfile.mkdtemp(prefix=name, dir=self.home))
+        # The home is build's, so the new directory may already be a planted link by now.
+        os.chown(path, self.user.pw_uid, self.user.pw_gid, follow_symlinks=False)
+        return path
+
+    def build(self, immutable):
+        tree = Path(self.args.tree).resolve()
+        work = self.owned('picker-build-')
+        try:
+            self.run(['bash', '-euo', 'pipefail', '-c',
+                      'export BUILDDIR="$1/build" PKGDEST="$1/pkg"; makepkg -p PKGBUILD.picker --nocheck --noconfirm',
+                      '_', work], user=True, cwd=tree)
+            archives = list((work/'pkg').glob('flea-picker-*.pkg.tar.zst'))
+            if len(archives) != 1 or not re.fullmatch(r'flea-picker-[A-Za-z0-9._+:-]+-(?:x86_64|aarch64)\.pkg\.tar\.zst', archives[0].name):
+                raise ValueError('build must produce exactly one picker package')
+            package = immutable/archives[0].name
+            copy_regular(archives[0], package, 64*1024*1024)
+            package.chmod(0o600)
+            validate(package)
+            source = immutable/'picker-source.tar.gz'
+            # A trusted git binary archives tracked source, running as build.
+            with source.open('wb') as output:
+                result = subprocess.run(['runuser', '-u', self.args.user, '--', *self.env,
+                                         'git', 'archive', '--format=tar.gz', 'HEAD'],
+                                        cwd=tree, stdout=output, stderr=self.log, stdin=subprocess.DEVNULL)
+            if result.returncode:
+                raise RuntimeError('candidate source snapshot failed')
+            # Plain staging is separate from the installed-only runtime leg.
+            self.run(['env', 'CARGO_TARGET_DIR='+str(work/'build/flea-picker/src/target'),
+                      'tools/flea-install', '--picker', '--destdir', str(work/'plain')], user=True, cwd=tree)
+            extract = work/'package'
+            self.run(['mkdir', extract], user=True)
+            # The validated root-private copy, streamed in; never the build user's own file.
+            with package.open('rb') as validated:
+                self.run(['bsdtar', '-xf', '-', '-C', extract], user=True, stdin=validated)
+            self.parity(work/'plain', extract)
+            (immutable/'archive-name').write_text(package.name+'\n')
+            print('picker-build: archive validated and plain payload byte parity passed')
+        finally:
+            shutil.rmtree(work)
+
+    def parity(self, first, second):
+        def inventory(root):
+            result = {}
+            for parent, dirs, files in os.walk(root, followlinks=False):
+                for name in dirs+files:
+                    path = Path(parent)/name
+                    relative = str(path.relative_to(root))
+                    if relative.startswith('.') or relative == 'usr/share/flea/install-manifest':
+                        continue
+                    if path.is_symlink():
+                        result[relative] = ('link', str(path.readlink()))
+                    elif path.is_file():
+                        result[relative] = ('file', path.stat().st_mode & 0o777, path.read_bytes())
+            return result
+        if inventory(first) != inventory(second):
+            raise ValueError('plain picker staging differs from the package archive')
+
+    def install(self, immutable):
+        original = Path(self.args.archive).resolve()
+        archive = immutable/'picker.pkg.tar.zst'
+        copy_regular(original, archive, 64*1024*1024)
+        archive.chmod(0o600)
+        deps = validate(archive)
+        print('picker-install: immutable archive validated before any pacman installation')
+        packages = self.run(['pacman', '-Sp', '--print-format', '%n', *deps], capture=True).splitlines()
+        if any(forbidden(name) for name in packages):
+            raise ValueError('forbidden transitive runtime dependency')
+        self.run(['pacman', '-S', '--needed', '--noconfirm', '--noprogressbar', *deps, 'ttf-dejavu'])
+        self.run(['pacman', '-U', '--noconfirm', '--noprogressbar', str(archive)])
+        inventory = self.run(['pacman', '-Q'], capture=True)
+        print(inventory, end='')
+        if any(forbidden(line.split()[0]) for line in inventory.splitlines()):
+            raise ValueError('fresh picker container contains a full-preview/Omarchy/Flea package')
+        if Path('/usr/share/omarchy').exists():
+            raise ValueError('fresh picker container has an Omarchy payload')
+        tests = Path(self.args.tests).resolve()
+        self.run(['python', tests/'tests/generic/picker/layout.py', '/'], user=True)
+        self.run([tests/'tests/generic/picker-load.sh', '/usr/share/flea/ui', '/usr/bin/flea'], user=True)
+        self.run([tests/'tests/generic/picker-modes.sh', '/usr/bin/flea'], user=True)
+        self.run(['dbus-run-session', '--', 'python', tests/'tests/generic/picker/portal.py'], user=True)
+        # The installed proof above had no candidate source tree. Only now expose
+        # a snapshot to the unprivileged plain-install transition scenario.
+        snapshot = original.parent/'picker-source.tar.gz'
+        source_copy = immutable/'candidate-source.tar.gz'
+        copy_regular(snapshot, source_copy, 512*1024*1024)
+        source_copy.chmod(0o644)
+        archive.chmod(0o644)
+        immutable.chmod(0o711)
+        source = self.owned('picker-source-')
+        try:
+            # Read-only root-owned inputs become reachable only after runtime proof.
+            self.run(['bsdtar', '-xf', source_copy, '-C', source], user=True)
+            target = source/'target/release'
+            self.run(['mkdir', '-p', target], user=True)
+            self.run(['cp', '/usr/bin/flea', target/'flea'], user=True)
+            stage = source/'plain-stage'
+            self.run([source/'tools/flea-install', '--picker', '--destdir', stage], user=True)
+            package = source/'package'; self.run(['mkdir', package], user=True)
+            self.run(['bsdtar', '-xf', archive, '-C', package], user=True)
+            self.parity(stage, package)
+            self.run([source/'tools/flea-install', '--uninstall', '--destdir', stage], user=True)
+            self.run(['env', 'FLEA_BIN=/usr/bin/flea', 'FLEA_INSTALL_REPO='+str(source),
+                      tests/'tests/generic/picker-install.sh'], user=True, cwd=source)
+            print('picker-install: installed load, portal smoke and plain archive parity passed')
+        finally:
+            shutil.rmtree(source)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    sub = parser.add_subparsers(dest='mode', required=True)
+    for mode in ('build', 'install'):
+        command = sub.add_parser(mode)
+        command.add_argument('--results', required=True)
+        command.add_argument('--as', dest='user', required=True)
+        if mode == 'build':
+            command.add_argument('--tree', required=True)
+            command.add_argument('--package-dir', required=True)
+        else:
+            command.add_argument('--archive', required=True)
+            command.add_argument('--tests', required=True)
+    args = parser.parse_args()
+    if os.geteuid() != 0:
+        parser.error('the trusted supervisor must run as root')
+    results = directory(args.results)
+    name = 'picker-'+args.mode
+    status = 1
+    immutable = Path(tempfile.mkdtemp(prefix='fork-picker-', dir='/var/lib'))
+    with (results/(name+'.log')).open('w') as log, contextlib.redirect_stdout(log), contextlib.redirect_stderr(log):
+        try:
+            supervisor = Supervisor(args, log)
+            if args.mode == 'build':
+                supervisor.build(immutable)
+                artifact = directory(args.package_dir)
+                for path in immutable.iterdir():
+                    shutil.copyfile(path, artifact/path.name)
+                    (artifact/path.name).chmod(0o644)
+            else:
+                supervisor.install(immutable)
+            status = 0
+        except Exception as error:
+            print(f'{name}: FAIL {error}', flush=True)
+        finally:
+            shutil.rmtree(immutable)
+    (results/(name+'.rc')).write_text(str(status)+'\n')
+    (results/(name+'.failures')).write_text('' if status == 0 else name+'\n')
+    print(f'{name}: rc={status}; trusted results: {results}')
+    return status
+
+
+if __name__ == '__main__':
+    sys.exit(main())

@@ -135,6 +135,39 @@ Offscreen loading is not visual or successful frontend accept/save evidence;
 those remain guest-session labs. Remove a required QML and imported JS from
 separate staged copies and require this load gate to fail when checking a release.
 
+The candidate job builds `PKGBUILD.picker --nocheck` as `build` through the
+published `tools/fork-picker-verify`, which also verifies archive/plain byte
+parity on its own validated copy, and uploads the results and the archive right
+after the gates, before the generic package is installed as root, so no candidate
+scriptlet can rewrite either. A separate pinned Arch container installs only the validated picker
+requirements and bounded test utilities. It receives the exact archive, a
+candidate snapshot used only after installed loading, and root-owned verifier
+material from VERIFIER_SHA; no generic install, themes or checkout UI can satisfy
+missing picker dependencies. All binary, helper and QML execution is unprivileged.
+Before root pacman installation, the supervisor copies the archive privately
+(a bounded regular file, never through a final link) and rejects scriptlets,
+hooks, members hidden behind a damaged header, path escapes and empty path
+segments, unsafe links/permissions, named-owner mismatches, privilege-bearing
+capability/ACL extensions, privileged destinations and unapproved
+dependency/capability metadata. Transitive preview,
+Omarchy and other Flea package dependencies also fail. Installed layout, actual
+load, profile/registration, real backend withdrawal/fault calls and plain
+transitions are mandatory; results remain root-owned and inaccessible to build.
+Snapshot and archive inputs stay root-private through runtime proof; only then
+are read-only root-owned copies exposed to the unprivileged transition stage.
+`picker-build` and `picker-install` cannot be compared away against baseline
+failures, and missing results or artifacts block publication. Bootstrap these
+new trusted helpers into the reviewed, published general-linux before relying
+on them for later rebases; old published supervisors cannot enforce new gates.
+No scheduler or publishing change is needed. Guest frontend acceptance and
+live workflow artifact transport remain distinct release evidence.
+Upstream build-only metadata (`makedepends`) passes through, and
+`PKGBUILD.picker` resets `checkdepends`, `groups` and `backup`. Any other new
+`.PKGINFO` field or architecture upstream adds still fails `picker-install`; a
+sync then takes two steps: extend `tools/picker/archive.py` in a reviewed
+commit published to `general-linux`, then rerun the sync, whose verifier is
+that published copy.
+
 ## The patch stack and when to drop each commit
 
 | Subject | Files | Drop it when |
@@ -158,6 +191,7 @@ separate staged copies and require this load gate to fail when checking a releas
 | `build(picker): add the picker-only package` | `PKGBUILD.picker`, `packaging/flea-picker-install`, `docs/install-linux.md`, `tests/generic/picker-package.sh`, `tests/generic/picker/layout.py`, `tests/generic/run.sh` | with `feat(picker)` |
 | `feat(install): support picker-only plain installs` | `tools/flea-install` (`--picker`), `PKGBUILD.picker` (`!strip`), `docs/install-linux.md`, `tests/generic/picker-install.sh`, `tests/generic/picker/install.py`, `tests/generic/run.sh` | with `build(picker): add the picker-only package` |
 | `test(picker): load the installed UI closure` | `tests/generic/picker-load.sh`, `tests/generic/picker-modes.sh`, `tests/generic/picker/{load,modes,probe}.py`, `tests/generic/run.sh` | with `build(picker): add the picker-only package` |
+| `ci(picker): verify a clean picker-only install` | `.github/workflows/fork-verify.yml` (picker build and uploads after the gates, the `picker-install` job, `compare` merging its result), `tools/fork-verify` (two mandatory gate names), `tools/fork-picker-verify`, `tools/picker/archive.py`, `tests/generic/picker-verify.sh`, `tests/generic/picker/{portal,verify}.py`, `tests/generic/run.sh` | with `build(picker): add the picker-only package`; bootstrap a changed supervisor or validator into the published `general-linux` before a sync relies on it |
 
 Rules every fork commit keeps, so a rebase stays cheap:
 
@@ -190,6 +224,7 @@ Rules every fork commit keeps, so a rebase stays cheap:
 | `picker-install.sh` | `tools/flea-install --picker` switches full to picker to full, then uninstalls, with manifest pruning, payload equal to the package's, the marker only on picker, and the confinement refusals intact |
 | `picker-modes.sh [FLEA_BIN]` | on a picker install every refused mode, an unknown one included, exits 2 with one sentence naming the picker-only install and touches no user file or handoff; `--open`, `--terminal`, `--ui-state`, the reveal diagnostic and reversible `--picker` routing still work |
 | `picker-load.sh [UI_DIR FLEA_BIN]` | the installed picker lists exact fixture rows in five offscreen request kinds, and every component the closure generator reached compiles against the installed tree |
+| `picker-verify.sh` | the archive validator rejects scriptlets, hooks, escapes, hardlinks, set-id and executable UI members, members hidden behind a damaged header, empty path segments, capability xattrs, non-root owners and unapproved metadata, and accepts inherited build requirements; `tools/fork-verify compare` blocks on a missing or red `picker-build`/`picker-install` even when upstream is red too |
 
 `FORK_OMARCHY_REF` points the parity and shell-load suites at an Omarchy `shell/` checkout (CI uses
 basecamp/omarchy v4.0.4); otherwise they use `/usr/share/omarchy/shell` when it exists.

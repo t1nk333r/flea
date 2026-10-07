@@ -6,7 +6,7 @@
 set -uo pipefail
 cd "$(dirname "$0")/../.." || exit 1
 
-suites="compat-surface compat-parity shellload-compat launch-root js clipboard-x11 terminal-fallback picker-closure picker-package picker-install picker-modes picker-load"
+suites="compat-surface compat-parity shellload-compat launch-root js clipboard-x11 terminal-fallback picker-closure picker-package picker-install picker-modes picker-load picker-verify dependencies-doc"
 failed=0
 ran=0
 skipped=0

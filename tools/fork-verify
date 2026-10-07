@@ -13,7 +13,7 @@
 set -u
 
 upstream_gates=(build test budget clippy js keymap modes)
-fork_gates=(generic)
+fork_gates=(generic picker-build picker-install)
 
 # Each gate runs from the tree's root, the way each tool expects to be run; $1 names it.
 # shellcheck disable=SC2016 # expands in the gate's own shell
@@ -66,7 +66,7 @@ run() {
   [ -n "$tree" ] && [ -d "$tree" ] && [ -n "$results" ] || { echo "fork-verify run: --tree DIR and --results DIR are required" >&2; return 2; }
   if [ -z "$gates" ]; then
     gates="${upstream_gates[*]}"
-    [ "$side" = baseline ] || gates="$gates ${fork_gates[*]}"
+    [ "$side" = baseline ] || gates="$gates generic"
   fi
   local home=""
   if [ -n "$as" ]; then
