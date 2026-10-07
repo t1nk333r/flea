@@ -117,6 +117,24 @@ and removal; obsolete desktop/FileManager1/shelf payload is removed on a switch
 to picker, and the marker is removed on a switch back. Unmanifested files remain
 untouched. `picker-install.sh` exercises both directions and refusal boundaries.
 
+`picker-load.sh [UI_DIR FLEA_BIN]` loads the installed picker offscreen in five
+isolated processes: open/list, stored grid, suggested save name, folder and
+SaveFiles. IPC must report the fixture path and exact rows, not merely readiness.
+It also uses the closure generator's runtime graph to generate a test-only probe
+against that same installed tree: every component the generator reached compiles
+and every retained singleton is accessed. Because the probe list comes from the
+generator, it proves the installed tree loads what the generator found, not that
+the generator found everything; `picker-closure.sh`'s regex oracle covers that
+for literal references. No checkout UI fallback, timeout success, missing
+dependency skip or load-error whitelist is accepted. Logs survive failures.
+`picker-modes.sh [FLEA_BIN]` proves refused commands, an unknown mode included,
+name the picker-only install and do not execute handoffs or
+change user files, while file/terminal handoffs and reversible FileChooser-only
+registration still work. Neither suite opens a visible host window.
+Offscreen loading is not visual or successful frontend accept/save evidence;
+those remain guest-session labs. Remove a required QML and imported JS from
+separate staged copies and require this load gate to fail when checking a release.
+
 ## The patch stack and when to drop each commit
 
 | Subject | Files | Drop it when |
@@ -139,6 +157,7 @@ untouched. `picker-install.sh` exercises both directions and refusal boundaries.
 | `build(picker): derive the picker UI closure` | `tools/flea-picker-closure`, `tools/picker/{closure,lexer,resolver}.py`, `tests/generic/picker-closure.sh`, `tests/generic/picker/{closure,oracle,sandbox}.py`, `tests/generic/run.sh` | with `feat(picker)` |
 | `build(picker): add the picker-only package` | `PKGBUILD.picker`, `packaging/flea-picker-install`, `docs/install-linux.md`, `tests/generic/picker-package.sh`, `tests/generic/picker/layout.py`, `tests/generic/run.sh` | with `feat(picker)` |
 | `feat(install): support picker-only plain installs` | `tools/flea-install` (`--picker`), `PKGBUILD.picker` (`!strip`), `docs/install-linux.md`, `tests/generic/picker-install.sh`, `tests/generic/picker/install.py`, `tests/generic/run.sh` | with `build(picker): add the picker-only package` |
+| `test(picker): load the installed UI closure` | `tests/generic/picker-load.sh`, `tests/generic/picker-modes.sh`, `tests/generic/picker/{load,modes,probe}.py`, `tests/generic/run.sh` | with `build(picker): add the picker-only package` |
 
 Rules every fork commit keeps, so a rebase stays cheap:
 
@@ -169,6 +188,8 @@ Rules every fork commit keeps, so a rebase stays cheap:
 | `picker-closure.sh` | the closure generator follows imports, registry types, deferred loads and assets in miniature trees and fails closed on nine unresolved or unapproved cases; on the real UI, a regex reading that shares nothing with its tokenizer finds no literal component or script reference outside the generated list |
 | `picker-package.sh [STAGE]` | the staged package payload has the picker-only layout (portal service, pruned registry, profile marker, confined compat links) and its backend answers |
 | `picker-install.sh` | `tools/flea-install --picker` switches full to picker to full, then uninstalls, with manifest pruning, payload equal to the package's, the marker only on picker, and the confinement refusals intact |
+| `picker-modes.sh [FLEA_BIN]` | on a picker install every refused mode, an unknown one included, exits 2 with one sentence naming the picker-only install and touches no user file or handoff; `--open`, `--terminal`, `--ui-state`, the reveal diagnostic and reversible `--picker` routing still work |
+| `picker-load.sh [UI_DIR FLEA_BIN]` | the installed picker lists exact fixture rows in five offscreen request kinds, and every component the closure generator reached compiles against the installed tree |
 
 `FORK_OMARCHY_REF` points the parity and shell-load suites at an Omarchy `shell/` checkout (CI uses
 basecamp/omarchy v4.0.4); otherwise they use `/usr/share/omarchy/shell` when it exists.
