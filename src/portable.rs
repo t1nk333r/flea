@@ -2,8 +2,10 @@
 mod gvfsfuse;
 mod jailroots;
 mod qmlroot;
+mod package_mode;
 mod terminal;
 
+pub use package_mode::guard as guard_package_mode;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};

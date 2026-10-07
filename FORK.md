@@ -72,6 +72,20 @@ files the fallback's defaults equal Omarchy's out-of-the-box palette and type sc
 two files in Omarchy's format themes Flea on any distro; `~/.config/omarchy/shell.toml` overrides
 them the same way it does on Omarchy.
 
+## Picker-only installation profile
+
+`flea-picker` ships the same binary, but owns `<prefix>/share/flea/picker-only`
+with exactly `picker-only\n`. The executable-relative guard allows only the
+first arguments the portal, its helpers and the picker window invoke (listed in
+`src/portable/package_mode.rs`); browser, TUI, defaults, updater, shelf and any
+other mode refuse with one sentence before any user writes or handoffs, so a
+mode upstream adds stays refused until it is reviewed into that list.
+Missing means full installation; malformed or unreadable fails closed.
+UI overrides do not change the profile and development binaries stay independent.
+Backend, picker, shared state and file/terminal handoffs retain their contracts.
+Undo full-package defaults with `flea --default off` before switching packages;
+the picker does not clean old user registrations or shelf plugins.
+
 ## The patch stack and when to drop each commit
 
 | Subject | Files | Drop it when |
@@ -90,6 +104,7 @@ them the same way it does on Omarchy.
 | `test(fork): run the X11 clipboard copy against stub tools` | `tests/generic/clipboard-x11.sh`, `tests/generic/js/clipboard.js`, `tests/generic/run.sh` | with `feat(clipboard)` |
 | `test(fork): open the fallback terminal end to end` | `tests/generic/terminal-fallback.sh`, `tests/generic/run.sh` | with `feat(terminal)` |
 | `fix(sandbox): mirror the host's /bin and /lib in the jail` | `src/portable/jailroots.rs`, `src/portable.rs`, `src/backend/sandbox.rs` (its four `/usr` links become one call per wrapper) | upstream's jail follows the host's own `/bin`, `/sbin`, `/lib` and `/lib64` |
+| `feat(picker): guard picker-only package modes` | `src/portable/package_mode.rs`, `src/portable/package_mode_tests.rs`, `src/portable.rs`, `src/main.rs` (+1, the second hook, right after the `--backend` dispatch) | upstream ships its own picker-only package, or the fork drops `flea-picker`; review `PICKER_MODES` whenever upstream adds a mode the picker invokes |
 
 Rules every fork commit keeps, so a rebase stays cheap:
 

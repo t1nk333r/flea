@@ -178,6 +178,7 @@ fn main() {
     if args.iter().any(|a| a == "--backend") {
         exit(backend::run::run());
     }
+    crate::portable::guard_package_mode(&args);
 
     // flea --thumb-worker: only ever started by the backend, inside its sandbox, with a socket on stdin.
     if args.len() == 2 && args[1] == "--thumb-worker" {
