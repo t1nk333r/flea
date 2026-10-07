@@ -86,6 +86,21 @@ Backend, picker, shared state and file/terminal handoffs retain their contracts.
 Undo full-package defaults with `flea --default off` before switching packages;
 the picker does not clean old user registrations or shelf plugins.
 
+`tools/flea-picker-closure --repo . --output DIR` tokenizes the picker dependency
+graph, follows scripts, registry types, deferred loads and static assets, and
+fails on unresolved or unapproved dependencies. Its sorted file list, filtered
+qmldir, module inventory and source-location reasons are generated, never tracked.
+The full small compat modules are support payload; `boot/shell.qml` is only a
+discovery sentinel and is not traversed or a supported direct Quickshell launch.
+`picker-closure.sh` also reads the real UI a second way, with plain regexes and no
+shared tokenizer: every quoted `.qml`/`.js`/`.mjs` name and every Loader `source`,
+`setSource` or `createComponent` path in a listed file must resolve to a listed
+file. It catches a component the generator silently drops when it is named by a
+literal; a type reached only by name is left to the installed compile probe.
+The review measurement is not a count contract: the actual graph also reaches
+DeviceMounts' deferred PowerSectorsReader. Dependency drift must be resolved and
+verified with the installed engine, not hidden by shipping the full UI.
+
 ## The patch stack and when to drop each commit
 
 | Subject | Files | Drop it when |
@@ -105,11 +120,12 @@ the picker does not clean old user registrations or shelf plugins.
 | `test(fork): open the fallback terminal end to end` | `tests/generic/terminal-fallback.sh`, `tests/generic/run.sh` | with `feat(terminal)` |
 | `fix(sandbox): mirror the host's /bin and /lib in the jail` | `src/portable/jailroots.rs`, `src/portable.rs`, `src/backend/sandbox.rs` (its four `/usr` links become one call per wrapper) | upstream's jail follows the host's own `/bin`, `/sbin`, `/lib` and `/lib64` |
 | `feat(picker): guard picker-only package modes` | `src/portable/package_mode.rs`, `src/portable/package_mode_tests.rs`, `src/portable.rs`, `src/main.rs` (+1, the second hook, right after the `--backend` dispatch) | upstream ships its own picker-only package, or the fork drops `flea-picker`; review `PICKER_MODES` whenever upstream adds a mode the picker invokes |
+| `build(picker): derive the picker UI closure` | `tools/flea-picker-closure`, `tools/picker/{closure,lexer,resolver}.py`, `tests/generic/picker-closure.sh`, `tests/generic/picker/{closure,oracle,sandbox}.py`, `tests/generic/run.sh` | with `feat(picker)` |
 
 Rules every fork commit keeps, so a rebase stays cheap:
 
 - New code lives in new files (`src/portable*`, `ui/compat`, `ui/boot-compat`, `tests/generic`,
-  `PKGBUILD.generic`, `packaging/`). An existing upstream file gets a one-line hook at most, and never grows
+  `tools/picker`, `PKGBUILD.generic`, `packaging/`). An existing upstream file gets a one-line hook at most, and never grows
   past its `tools/flea-file-budget` ceiling (`src/gui.rs` sits exactly at 501, so its hook is net
   zero lines).
 - `tests/run-all.sh`, `tests/js/harness.qml`, `AGENTS.md`, `README.md`, the root `PKGBUILD` and
@@ -132,6 +148,7 @@ Rules every fork commit keeps, so a rebase stays cheap:
 | `js.sh` | the fork's pure JavaScript (`ui/js/X11Copy.js`) |
 | `clipboard-x11.sh` | the X11 copy script hands xclip, else xsel, the exact text on the CLIPBOARD selection, reports failure when neither copies, and exits while the tool's selection owner lingers |
 | `terminal-fallback.sh [FLEA_BIN]` | with no xdg-terminal-exec, `flea --terminal` opens `$TERMINAL`, else the first known emulator, in the canonical directory with no inherited pipe and its own process group, and exits 2 when none is installed |
+| `picker-closure.sh` | the closure generator follows imports, registry types, deferred loads and assets in miniature trees and fails closed on nine unresolved or unapproved cases; on the real UI, a regex reading that shares nothing with its tokenizer finds no literal component or script reference outside the generated list |
 
 `FORK_OMARCHY_REF` points the parity and shell-load suites at an Omarchy `shell/` checkout (CI uses
 basecamp/omarchy v4.0.4); otherwise they use `/usr/share/omarchy/shell` when it exists.
