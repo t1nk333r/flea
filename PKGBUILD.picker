@@ -1,0 +1,41 @@
+# Maintainer: t1nk33r <id7xyz@gmail.com>
+# Build from the clone, with a separate BUILDDIR as for PKGBUILD.generic.
+[[ -f "$startdir/PKGBUILD" ]] || { echo 'run makepkg -p PKGBUILD.picker from the repo root' >&2; exit 1; }
+source "$startdir/PKGBUILD"
+pkgname=flea-picker
+pkgdesc='Flea file chooser portal without the file manager'
+url='https://github.com/t1nk333r/flea'
+_picker_pkgrel=1
+pkgrel="${pkgrel}.${_picker_pkgrel}"
+options=('!debug')
+depends=('bash' 'bubblewrap' 'coreutils' 'dbus' 'fontconfig' 'gcc-libs' 'glib2' 'glibc'
+         'gvfs' 'python' 'python-gobject' 'qt6-declarative' 'quickshell>=0.3.1'
+         'shared-mime-info' 'util-linux' 'xdg-desktop-portal')
+conflicts=('flea' 'flea-bin' 'flea-git' 'flea-generic')
+provides=('flea-picker-portal')
+# Upstream's check, group and backup metadata describe the full package, not this one.
+checkdepends=()
+groups=()
+backup=()
+optdepends=('gvfs-afc: Apple device mounts' 'gvfs-dnssd: network discovery'
+            'gvfs-gphoto2: camera mounts' 'gvfs-mtp: Android device mounts'
+            'gvfs-nfs: NFS mounts' 'gvfs-smb: SMB mounts'
+            'kimageformats: additional image thumbnail decoders' 'libheif: HEIC thumbnails'
+            'ffmpegthumbnailer: video grid thumbnails'
+            'xdg-terminal-exec: explicit terminal handoff (or a supported emulator)'
+            'xdg-desktop-portal-gtk: GTK chooser fallback')
+# Reuse the upstream binary build without changing its recipe.
+eval "$(declare -f build | sed '1s/^build /_flea_picker_binary_build /')"
+build() {
+    _flea_picker_binary_build
+    "$startdir/tools/flea-picker-closure" --repo "$startdir" --output "$srcdir/picker-closure"
+}
+package() {
+    "$startdir/packaging/flea-picker-install" "$startdir" "$pkgdir" "$srcdir/target/release/flea" "$pkgname"
+}
+check() {
+    # Only suites that need no fixture root; the trusted CI legs run the picker suites.
+    export CARGO_TARGET_DIR="$srcdir/target"
+    cd "$startdir"
+    cargo test --release --locked portable::package_mode
+}

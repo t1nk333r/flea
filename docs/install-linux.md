@@ -31,6 +31,45 @@ BUILDDIR=$(mktemp -d) makepkg -p PKGBUILD.generic -si
 removes it. Never pass `--clean`/`-C` without `BUILDDIR`. The package is named `flea` and owns
 `/usr/bin/flea`, like every other Flea package (`flea-bin`, `flea-git`); install one of them only.
 
+### Picker-only: `flea-picker`
+
+For portal file dialogs without Flea as a file manager:
+
+```sh
+BUILDDIR=$(mktemp -d) makepkg -p PKGBUILD.picker -si
+flea --picker
+# before package removal, each user runs:
+flea --picker off
+```
+
+This package installs no app-menu entry, directory MIME association,
+FileManager1 service or shelf plugin. It conflicts with `flea`, `flea-bin` and
+`flea-git`; it does not satisfy dependencies asking for a file manager.
+Only applications using the XDG FileChooser portal are routed, not native
+nonportal dialogs. GUI/TUI browsing, `--default`, `--update`, `flea shelf` and
+every other mode the picker does not use refuse; `--open`, `--terminal` and
+shared picker helpers keep their contracts.
+Update with the package manager, not Flea's in-app updater.
+
+Before switching an existing full installation, each affected user must run
+`flea --default off` using the full package (it also releases picker routing),
+and disable/remove an existing shelf plugin through the full package if desired.
+Then replace the package and run `flea --picker`. Transactions never modify home
+directories or erase stale user desktop entries, FileManager1 services or plugins.
+Fresh installs need only `flea --picker`; removal needs `flea --picker off`.
+To switch back to full, install `flea` (for example with `PKGBUILD.generic`),
+accept pacman's prompt to remove the conflicting `flea-picker`, then each user
+runs `flea --default` again.
+The shipped `boot/shell.qml` is a discovery sentinel, not a working file-manager
+entry. Direct `qs -p .../boot/shell.qml` is unsupported.
+
+Picker runtime requirements are Bash/coreutils, bubblewrap, D-Bus, Fontconfig,
+GLib/GIO with GVFS, Python with GObject, Qt declarative (Quick, Layouts, Shapes,
+XML), Quickshell >= 0.3.1, shared-mime-info, util-linux and xdg-desktop-portal.
+GVFS protocol/phone backends, HEIC image decoders, video thumbnailers,
+xdg-desktop-portal-gtk and a terminal handoff/emulator are optional. No Omarchy,
+QtMultimedia, PDF/WebEngine, quickjs, expect or clipboard tools are required.
+
 ## Other distros: `tools/flea-install`
 
 Build as your user, then install as root. The installer runs `PKGBUILD.generic`'s `package()` into a

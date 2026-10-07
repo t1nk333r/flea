@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# The single picker payload consumer for makepkg and the plain installer.
+set -euo pipefail
+[ "$#" -eq 4 ] || { echo 'usage: flea-picker-install REPO ROOT BIN PKGNAME' >&2; exit 2; }
+repo=$(realpath "$1")
+root=$2
+binary=$3
+pkgname=$4
+[[ "$pkgname" == flea-picker ]] || { echo 'picker package name must be flea-picker' >&2; exit 2; }
+closure=$(mktemp -d)
+trap 'rm -rf -- "$closure"' EXIT
+"$repo/tools/flea-picker-closure" --repo "$repo" --output "$closure"
+ui="$root/usr/share/flea/ui"
+while IFS= read -r path; do
+    # Compat licensing belongs in licenses, not in the import tree.
+    [[ "$path" == compat/LICENSE.omarchy ]] && continue
+    install -Dm644 "$repo/ui/$path" "$ui/$path"
+done < "$closure/ui-files.txt"
+install -Dm644 "$closure/qmldir" "$ui/qmldir"
+install -Dm755 "$binary" "$root/usr/bin/flea"
+for helper in flea-portal flea-gio-auth; do
+    install -Dm755 "$repo/tools/$helper" "$root/usr/lib/flea/$helper"
+done
+install -Dm644 "$repo/packaging/flea.portal" "$root/usr/share/xdg-desktop-portal/portals/flea.portal"
+install -Dm644 "$repo/packaging/org.freedesktop.impl.portal.desktop.flea.service" "$root/usr/share/dbus-1/services/org.freedesktop.impl.portal.desktop.flea.service"
+install -Dm644 "$repo/LICENSE" "$root/usr/share/licenses/$pkgname/LICENSE"
+install -Dm644 "$repo/ui/compat/LICENSE.omarchy" "$root/usr/share/licenses/$pkgname/LICENSE.omarchy"
+for notice in "$repo"/ui/vendor/LICENSES/*; do
+    install -Dm644 "$notice" "$ui/vendor/LICENSES/${notice##*/}"
+done
+printf 'picker-only\n' > "$root/usr/share/flea/picker-only"
+chmod 644 "$root/usr/share/flea/picker-only"
+install -d "$ui/boot-compat"
+ln -s ../boot/picker.qml "$ui/boot-compat/picker.qml"
+for module in Commons Ui; do
+    ln -s "../compat/$module" "$ui/boot-compat/$module"
+    ln -s "/usr/share/omarchy/shell/$module" "$ui/$module"
+    ln -s "/usr/share/omarchy/shell/$module" "$ui/boot/$module"
+done
